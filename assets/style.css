@@ -11,6 +11,26 @@
     --success: #3fb950;
     --danger: #f85149;
     --warning: #d29922;
+
+    --bs-body-color: var(--text-primary);
+    --bs-body-color-rgb: 230, 237, 243;
+    --bs-heading-color: var(--text-primary);
+    --bs-card-color: var(--text-primary);
+    --bs-card-title-color: var(--text-primary);
+    --bs-card-cap-color: var(--text-primary);
+    --bs-table-color: var(--text-primary);
+    --bs-table-striped-color: var(--text-primary);
+    --bs-navbar-color: var(--text-secondary);
+    --bs-navbar-hover-color: var(--text-primary);
+    --bs-navbar-active-color: var(--text-primary);
+    --bs-navbar-brand-color: var(--accent);
+    --bs-accordion-color: var(--text-primary);
+    --bs-accordion-btn-color: var(--text-primary);
+    --bs-list-group-color: var(--text-primary);
+    --bs-modal-color: var(--text-primary);
+    --bs-pagination-color: var(--text-primary);
+    --bs-dropdown-color: var(--text-primary);
+    --bs-dropdown-bg: var(--bg-card);
 }
 
 * {
@@ -225,6 +245,15 @@ code {
 
 .btn-close {
     filter: invert(0.8);
+}
+
+h1, h2, h3, h4, h5, h6,
+.h1, .h2, .h3, .h4, .h5, .h6,
+.card-title, .card-text, .card-body,
+.modal-title, .modal-body,
+.accordion-body,
+.dropdown-item {
+    color: var(--text-primary);
 }
 
 .card-hover {
