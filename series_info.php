@@ -8,7 +8,7 @@ if ($seriesId <= 0) {
     exit;
 }
 
-$result = apiRequest('get_series_info', ['series_id' => $seriesId]);
+$result = apiRequest('get_series_info', ['series_id' => $seriesId], 300);
 $error     = $result['error'] ?? null;
 $info      = $result['data']['info'] ?? [];
 $episodes  = $result['data']['episodes'] ?? [];

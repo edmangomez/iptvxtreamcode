@@ -56,17 +56,16 @@ $pages = [
 (function() {
     var loader = document.getElementById('page-loader');
     if (loader) {
-        loader.classList.remove('d-none');
+        window.addEventListener('pageshow', function(e) {
+            if (e.persisted) {
+                loader.classList.add('d-none');
+            } else {
+                loader.classList.remove('d-none');
+                window.addEventListener('DOMContentLoaded', function() {
+                    loader.classList.add('d-none');
+                });
+            }
+        });
     }
-    window.addEventListener('DOMContentLoaded', function() {
-        if (loader) {
-            loader.classList.add('d-none');
-        }
-    });
-    window.addEventListener('beforeunload', function() {
-        if (loader) {
-            loader.classList.remove('d-none');
-        }
-    });
 })();
 </script>

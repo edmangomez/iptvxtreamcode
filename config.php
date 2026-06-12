@@ -95,14 +95,29 @@ function isTestMode(): bool {
     return !empty($_SESSION['_test_mode']);
 }
 
-function apiRequest(string $action = '', array $extra = []): array {
+function apiRequest(string $action = '', array $extra = [], int $cacheTtl = 0): array {
     if (isTestMode()) {
         require_once __DIR__ . '/api/mock_data.php';
         $data = getMockData($action, $extra);
         return ['data' => $data, 'http_code' => 200];
     }
     $url = buildApiUrl($action, $extra);
-    return curlRequest($url);
+    $cacheKey = 'api_' . md5($url);
+
+    if ($cacheTtl > 0 && isset($_SESSION['_api_cache'][$cacheKey])) {
+        $entry = $_SESSION['_api_cache'][$cacheKey];
+        if (time() - $entry['time'] < $cacheTtl) {
+            return $entry['data'];
+        }
+    }
+
+    $result = curlRequest($url);
+
+    if ($cacheTtl > 0 && !isset($result['error'])) {
+        $_SESSION['_api_cache'][$cacheKey] = ['time' => time(), 'data' => $result];
+    }
+
+    return $result;
 }
 
 function curlRequest(string $url): array {

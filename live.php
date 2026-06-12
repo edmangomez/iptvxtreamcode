@@ -6,7 +6,7 @@ $categoryId = trim($_GET['category_id'] ?? '');
 $search     = trim($_GET['search'] ?? '');
 
 // Categorías
-$catResult = apiRequest('get_live_categories');
+$catResult = apiRequest('get_live_categories', [], 300);
 $categories = is_array($catResult['data'] ?? null) ? $catResult['data'] : [];
 $catError   = $catResult['error'] ?? null;
 
@@ -16,7 +16,7 @@ $streamError = null;
 $selectedCategoryName = '';
 
 if ($categoryId !== '') {
-    $streamResult = apiRequest('get_live_streams', ['category_id' => $categoryId]);
+    $streamResult = apiRequest('get_live_streams', ['category_id' => $categoryId], 120);
     $streams = is_array($streamResult['data'] ?? null) ? $streamResult['data'] : [];
     $streamError = $streamResult['error'] ?? null;
 

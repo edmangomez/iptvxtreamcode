@@ -15,7 +15,7 @@ if (!in_array($type, ['live', 'vod', 'series'], true) || $id <= 0) {
 if ($ext === '') {
     $ext = $type === 'live' ? 'm3u8' : 'ts';
     if ($type === 'vod') {
-        $info = apiRequest('get_vod_info', ['vod_id' => $id]);
+        $info = apiRequest('get_vod_info', ['vod_id' => $id], 300);
         $ext = $info['data']['movie_data']['container_extension'] ?? 'mp4';
     }
 }
@@ -35,7 +35,7 @@ $isHls = $ext === 'm3u8';
 // EPG para Live
 $epgListings = [];
 if ($type === 'live') {
-    $epgResult = apiRequest('get_short_epg', ['stream_id' => $id]);
+    $epgResult = apiRequest('get_short_epg', ['stream_id' => $id], 120);
     $epgListings = $epgResult['data']['epg_listings'] ?? [];
 }
 ?>

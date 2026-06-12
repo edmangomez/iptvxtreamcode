@@ -5,7 +5,7 @@ requireLogin();
 $categoryId = trim($_GET['category_id'] ?? '');
 $search     = trim($_GET['search'] ?? '');
 
-$catResult = apiRequest('get_series_categories');
+$catResult = apiRequest('get_series_categories', [], 300);
 $categories = is_array($catResult['data'] ?? null) ? $catResult['data'] : [];
 $catError   = $catResult['error'] ?? null;
 
@@ -14,7 +14,7 @@ $seriesError = null;
 $selectedCategoryName = '';
 
 if ($categoryId !== '') {
-    $seriesResult = apiRequest('get_series', ['category_id' => $categoryId]);
+    $seriesResult = apiRequest('get_series', ['category_id' => $categoryId], 120);
     $seriesList = is_array($seriesResult['data'] ?? null) ? $seriesResult['data'] : [];
     $seriesError = $seriesResult['error'] ?? null;
 

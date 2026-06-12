@@ -2,7 +2,7 @@
 require_once __DIR__ . '/config.php';
 requireLogin();
 
-$result = apiRequest();
+$result = apiRequest('', [], 300);
 $apiError = $result['error'] ?? null;
 $userInfo = $result['data']['user_info'] ?? [];
 $serverInfo = $result['data']['server_info'] ?? [];
