@@ -1,0 +1,5 @@
+.env
+env_setup.php
+test_setup.php
+.DS_Store
+*.log
