@@ -1,19 +1,12 @@
 <?php
-require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/backend/api/config.php';
+session_start();
 
-$_SESSION = [];
-
-if (ini_get('session.use_cookies')) {
-    $params = session_get_cookie_params();
-    setcookie(session_name(), '', [
-        'expires'  => time() - 42000,
-        'path'     => $params['path'],
-        'domain'   => $params['domain'],
-        'secure'   => $params['secure'],
-        'httponly' => $params['httponly'],
-    ]);
+$token = $_SESSION['token'] ?? '';
+if ($token) {
+    $sessions = getJSON('active_sessions');
+    $sessions = array_filter($sessions, fn($s) => $s['token'] !== $token);
+    putJSON('active_sessions', array_values($sessions));
 }
-
 session_destroy();
 header('Location: index.php');
-exit;
