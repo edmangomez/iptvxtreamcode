@@ -1,1 +1,9 @@
-[]
+[
+    {
+        "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjozLCJ1c2VybmFtZSI6ImVkbWFuIiwiZXhwIjoxNzgxOTE0OTY3fQ==.fq85ellIJ9cQB5FSYfV9wQ50NKHCg3B2Yyb4emQQ2GE=",
+        "user_id": 3,
+        "username": "edman",
+        "created_at": "2026-06-19 00:22:47",
+        "expires_at": "2026-06-20 00:22:47"
+    }
+]

@@ -1,8 +1,20 @@
 [
-  {
-    "id": 1,
-    "username": "cliente1",
-    "password": "$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC\/.og\/at2.uheWG\/igi",
-    "created_at": "2024-01-01"
-  }
+    {
+        "id": 1,
+        "username": "cliente1",
+        "password": "$2y$10$Ru4He\/BVYHAVVe1uA4\/BsOYAbBwGUdUeTue5GJ\/Z887fQdvFkQsvq",
+        "created_at": "2024-01-01"
+    },
+    {
+        "id": 2,
+        "username": "test_direct",
+        "password": "hash123",
+        "created_at": "2024-01-01"
+    },
+    {
+        "id": 3,
+        "username": "edman",
+        "password": "$2y$10$XC.lmNdzggFl3nlJuca3E.10fVAUvPr6WfphX1ZYIfI5LguK9FRs6",
+        "created_at": "2026-06-19"
+    }
 ]
