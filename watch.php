@@ -85,7 +85,7 @@ $transcodedUrl = 'stream.php?transcode=1&url=' . urlencode($streamUrl);
             <small><?= $seriesId ? 'Serie' : 'Película' ?> · <?= htmlspecialchars($ext) ?></small>
         </div>
         <div class="ms-auto d-flex align-items-center gap-2">
-            <span id="audioBadge" class="badge" style="display:none;"></span>
+            <span id="statusBadge" class="badge bg-secondary" style="display:none;">Cargando...</span>
         </div>
     </div>
 
@@ -106,7 +106,7 @@ $transcodedUrl = 'stream.php?transcode=1&url=' . urlencode($streamUrl);
     // ========================================================================
     // DOM References
     // ========================================================================
-    const audioBadge = document.getElementById('audioBadge');
+    const statusBadge = document.getElementById('statusBadge');
 
     // ========================================================================
     // History Recording
@@ -120,53 +120,34 @@ $transcodedUrl = 'stream.php?transcode=1&url=' . urlencode($streamUrl);
     }).catch(() => {});
 
     // ========================================================================
-    // Audio Status UI
-    // ========================================================================
-    function showAudioOk() {
-        audioBadge.style.display = 'inline-block';
-        audioBadge.textContent   = '✅ Audio AAC';
-        audioBadge.className     = 'badge bg-success';
-    }
-
-    function showAudioWarning() {
-        audioBadge.style.display = 'inline-block';
-        audioBadge.textContent   = '🔇 Sin audio (AC3)';
-        audioBadge.className     = 'badge bg-warning text-dark';
-    }
-
-    // ========================================================================
     // STARTUP
     //
-    // 1. Try transcoding proxy first (video copy + audio AAC → browser-safe)
-    // 2. If ffmpeg transcoding fails, fall back to direct URL (video only,
-    //    AC3 audio not decodable in browsers) and show a warning badge.
+    // stream.php?transcode=1 handles ALL formats server-side:
+    //   - Video H.264  → copy (fast)
+    //   - Video HEVC   → re-encode to H.264 (browser compatible)
+    //   - Audio AC3/EAC3/DTS/MP3/… → always AAC
+    //
+    // If transcoding fails for any reason, fall back to the direct URL.
     // ========================================================================
     (function init() {
-        // --- Attempt 1: transcoded stream (audio works) ---
+        statusBadge.style.display = 'inline-block';
+
         video.src = transcodedUrl;
         video.play().catch(() => {});
 
+        // Hide "Cargando" once video actually starts playing
+        video.addEventListener('playing', function onPlaying() {
+            video.removeEventListener('playing', onPlaying);
+            statusBadge.style.display = 'none';
+        }, { once: true });
+
+        // If transcoding fails, fall back to direct URL silently
         video.onerror = function () {
-            console.warn('[watch] Transcoding failed, falling back to direct URL');
-
-            // Remove this handler before setting the new src so it doesn't
-            // fire again on the fallback source.
             video.onerror = null;
-
+            statusBadge.style.display = 'none';
             video.src = streamUrl;
             video.play().catch(() => {});
-
-            showAudioWarning();
         };
-
-        // Transcoding started without error → mark audio as OK once metadata loads
-        video.addEventListener('loadedmetadata', function onMeta() {
-            video.removeEventListener('loadedmetadata', onMeta);
-            // Only show "AAC" badge if we're still on the transcoded URL
-            if (video.src.includes('transcode=1')) {
-                showAudioOk();
-            }
-        }, { once: true });
     })();
     </script>
 </body>

@@ -28,23 +28,50 @@ if ($transcodeMode && !empty($videoUrl)) {
         exit;
     }
 
-    $ffmpeg = '/tmp/ffmpeg-7.0.2-amd64-static/ffmpeg';
+    $ffmpeg  = '/tmp/ffmpeg-7.0.2-amd64-static/ffmpeg';
+    $ffprobe = '/tmp/ffmpeg-7.0.2-amd64-static/ffprobe';
 
-    if (!is_executable($ffmpeg)) {
+    if (!is_executable($ffmpeg) || !is_executable($ffprobe)) {
         http_response_code(500);
-        echo json_encode(['error' => 'ffmpeg not found or not executable']);
+        echo json_encode(['error' => 'ffmpeg not available']);
         exit;
     }
 
-    // ffmpeg segfaults when given HTTP URLs directly on this system.
-    // Solution: pipe curl output into ffmpeg stdin.
-    $curlCmd = 'curl -s -L --max-time 7200 ' . escapeshellarg($videoUrl);
+    // ── Step 1: detect video codec from first 128 KB (fast Range request) ──
+    // ffprobe with -probesize 131072 -analyzeduration 0 reads just enough to
+    // identify codec names without downloading the whole file.
+    $probeCmd = 'curl -s -L --max-time 10 -H "Range: bytes=0-131071" '
+              . escapeshellarg($videoUrl)
+              . ' | ' . $ffprobe
+              . ' -v error -probesize 131072 -analyzeduration 0'
+              . ' -show_entries stream=codec_name,codec_type'
+              . ' -of csv=p=0 -i pipe:0 2>/dev/null';
+    $probeOut = shell_exec($probeCmd) ?? '';
+
+    // ── Step 2: choose video encoding strategy based on detected codec ──
+    // H.264  → copy with avc1 tag (no re-encode, instant start)
+    // HEVC   → re-encode to H.264 (Firefox/older Chrome don't support HEVC)
+    // others → re-encode to H.264 (max compatibility)
+    if (preg_match('/\bhevc\b|\bh265\b|\bhvc1\b|\bhev1\b/i', $probeOut)) {
+        $videoOpts = '-c:v libx264 -preset ultrafast -crf 22 -tag:v avc1';
+    } elseif (preg_match('/\bvp9\b|\bav1\b|\bmpeg4\b|\bmpeg2video\b|\bvc1\b|\bwmv\b/i', $probeOut)) {
+        $videoOpts = '-c:v libx264 -preset ultrafast -crf 22 -tag:v avc1';
+    } else {
+        // h264 or unknown → copy with correct MP4 tag
+        $videoOpts = '-c:v copy -tag:v avc1';
+    }
+
+    // ── Step 3: stream curl | ffmpeg → fragmented MP4 ──
+    // ffmpeg segfaults when given HTTP URLs directly on this system,
+    // so we pipe curl's output into ffmpeg stdin.
+    // Audio: always transcode to AAC regardless of input (AC3, EAC3, DTS, MP3…)
+    $curlCmd   = 'curl -s -L --max-time 7200 ' . escapeshellarg($videoUrl);
     $ffmpegCmd = $ffmpeg
         . ' -loglevel error'
         . ' -i pipe:0'
-        . ' -map 0:v:0 -map 0:a:0'   // only first video + first audio track
-        . ' -c:v copy -tag:v avc1'    // copy H.264, set avc1 tag so browsers recognise it
-        . ' -c:a aac -b:a 192k'       // transcode EAC3 → AAC
+        . ' -map 0:v:0 -map 0:a:0'          // first video + first audio only
+        . ' ' . $videoOpts                   // video: copy H.264 or re-encode
+        . ' -c:a aac -b:a 192k'             // audio: always AAC (handles every input codec)
         . ' -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof'
         . ' pipe:1 2>/dev/null';
 
@@ -54,15 +81,11 @@ if ($transcodeMode && !empty($videoUrl)) {
     header('Cache-Control: no-cache, no-store');
     header('X-Accel-Buffering: no');
 
-    // Disable PHP output buffering so chunks reach the browser immediately
     @ini_set('output_buffering', 0);
     @ini_set('zlib.output_compression', 0);
-    if (ob_get_level()) {
-        ob_end_clean();
-    }
+    if (ob_get_level()) ob_end_clean();
 
     $proc = popen($cmd, 'r');
-
     if (!is_resource($proc)) {
         http_response_code(500);
         echo json_encode(['error' => 'Failed to start transcoding pipeline']);
@@ -71,9 +94,7 @@ if ($transcodeMode && !empty($videoUrl)) {
 
     while (!feof($proc)) {
         $chunk = fread($proc, 65536);
-        if ($chunk === false || $chunk === '') {
-            break;
-        }
+        if ($chunk === false || $chunk === '') break;
         echo $chunk;
         flush();
     }
