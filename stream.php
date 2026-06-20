@@ -14,10 +14,279 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// ── Transcode mode ──
+// ═══════════════════════════════════════════════════════════════════════════
+// ── HLS Mode A: Start a new HLS transcoding session ────────────────────────
+// Usage: stream.php?hls=start&url=<encoded_url>[&audio=<idx>]
+//
+// Probes the remote file with ffprobe, launches ffmpeg in the background
+// (curl | ffmpeg → disk segments), and immediately returns JSON with the
+// session ID, playlist URL, audio tracks, and subtitle tracks.
+// ═══════════════════════════════════════════════════════════════════════════
+if (isset($_GET['hls']) && $_GET['hls'] === 'start') {
+    header('Content-Type: application/json');
+
+    $url = $_GET['url'] ?? '';
+    if (!filter_var($url, FILTER_VALIDATE_URL)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'Invalid URL']);
+        exit;
+    }
+
+    $audioIdx = max(0, (int)($_GET['audio'] ?? 0));
+
+    $ffmpeg  = '/tmp/ffmpeg-7.0.2-amd64-static/ffmpeg';
+    $ffprobe = '/tmp/ffmpeg-7.0.2-amd64-static/ffprobe';
+
+    if (!is_executable($ffmpeg) || !is_executable($ffprobe)) {
+        http_response_code(500);
+        echo json_encode(['error' => 'ffmpeg not available']);
+        exit;
+    }
+
+    // ── Generate unique session & working directory ──
+    $session = bin2hex(random_bytes(8));
+    $dir     = sys_get_temp_dir() . '/hls_' . $session;
+    mkdir($dir, 0777, true);
+
+    // ── Probe the stream via a fast 128 KB Range request ──
+    // ffmpeg segfaults with direct HTTP URLs on this system, so we pipe
+    // curl output into ffprobe stdin.
+    $probeJson = shell_exec(
+        'curl -s -L --max-time 10 -H "Range: bytes=0-131071" ' . escapeshellarg($url) .
+        ' | ' . $ffprobe .
+        ' -v error -probesize 131072 -analyzeduration 0' .
+        ' -show_streams -print_format json -i pipe:0 2>/dev/null'
+    );
+    $streams = json_decode($probeJson, true)['streams'] ?? [];
+
+    // ── Parse streams into typed track lists ──
+    $videoCodec  = '';
+    $audioTracks = [];
+    $subTracks   = [];
+
+    foreach ($streams as $s) {
+        $codecType = $s['codec_type'] ?? '';
+
+        if ($codecType === 'video' && $videoCodec === '') {
+            $videoCodec = $s['codec_name'] ?? '';
+
+        } elseif ($codecType === 'audio') {
+            $n    = count($audioTracks);
+            $lang = $s['tags']['language'] ?? ($s['tags']['title'] ?? ('Track ' . ($n + 1)));
+            $audioTracks[] = [
+                'index' => $n,
+                'lang'  => strtoupper($lang),
+                'codec' => $s['codec_name'] ?? '',
+            ];
+
+        } elseif ($codecType === 'subtitle') {
+            $n    = count($subTracks);
+            $lang = $s['tags']['language'] ?? ($s['tags']['title'] ?? ('Sub ' . ($n + 1)));
+            $subTracks[] = [
+                'index' => $n,
+                'lang'  => strtoupper($lang),
+            ];
+        }
+    }
+
+    // Clamp audioIdx to a valid range
+    $audioIdx = min($audioIdx, max(0, count($audioTracks) - 1));
+
+    // ── Choose video encoding strategy ──
+    // H.264 → stream-copy (fast, no quality loss)
+    // HEVC / anything else → re-encode to H.264 for browser compatibility
+    if (preg_match('/\bh264\b|\bavc1?\b/i', $videoCodec)) {
+        $videoOpts = '-c:v copy';
+    } else {
+        $videoOpts = '-c:v libx264 -preset ultrafast -crf 22';
+    }
+
+    // ── Build the main HLS ffmpeg command ────────────────────────────────
+    // Maps only video + selected audio track.  Subtitle extraction runs as
+    // separate parallel processes (see below) because ffmpeg's WebVTT muxer
+    // buffers all cues and only flushes at EOF — including it here would keep
+    // the subtitle file at 0 bytes for the entire HLS session duration.
+    // ─────────────────────────────────────────────────────────────────────
+    $ffmpegCmd =
+        'curl -s -L --max-time 7200 ' . escapeshellarg($url) .
+        ' | ' . $ffmpeg .
+        ' -loglevel error' .
+        ' -probesize 1000000 -analyzeduration 0 -fflags +genpts+discardcorrupt' .
+        ' -i pipe:0' .
+        ' -map 0:v:0 -map 0:a:' . $audioIdx .
+        ' ' . $videoOpts .
+        ' -c:a aac -b:a 192k' .
+        ' -hls_time 6' .
+        ' -hls_list_size 0' .
+        ' -hls_segment_filename ' . escapeshellarg($dir . '/seg%03d.ts') .
+        ' ' . escapeshellarg($dir . '/playlist.m3u8') .
+        ' 2>' . escapeshellarg($dir . '/ffmpeg.log');
+
+    // ── Launch main HLS ffmpeg in the background (nohup, fully detached) ──
+    shell_exec('nohup bash -c ' . escapeshellarg($ffmpegCmd) . ' > /dev/null 2>&1 &');
+
+    // ── Launch one dedicated subtitle-extraction process per subtitle track ──
+    // Each spawns its own curl | ffmpeg with only the relevant subtitle stream
+    // mapped to a WebVTT output.  The VTT file will appear once the entire
+    // source file has been downloaded (ffmpeg's WebVTT muxer flushes at EOF).
+    foreach ($subTracks as $sub) {
+        $subCmd =
+            'curl -s -L --max-time 7200 ' . escapeshellarg($url) .
+            ' | ' . $ffmpeg .
+            ' -loglevel error' .
+            ' -probesize 1000000 -analyzeduration 0 -fflags +genpts+discardcorrupt' .
+            ' -i pipe:0' .
+            ' -map 0:s:' . $sub['index'] .
+            ' -c:s webvtt ' .
+            escapeshellarg($dir . '/sub' . $sub['index'] . '.vtt') .
+            ' 2>>' . escapeshellarg($dir . '/ffmpeg.log');
+        shell_exec('nohup bash -c ' . escapeshellarg($subCmd) . ' > /dev/null 2>&1 &');
+    }
+
+    // ── Persist session metadata to disk ──
+    file_put_contents($dir . '/meta.json', json_encode([
+        'session'     => $session,
+        'url'         => $url,
+        'audioIdx'    => $audioIdx,
+        'audioTracks' => $audioTracks,
+        'subTracks'   => $subTracks,
+        'created'     => time(),
+    ]));
+
+    // ── Garbage-collect stale sessions (older than 7200 s) ──
+    $tmpBase = sys_get_temp_dir();
+    foreach (glob($tmpBase . '/hls_*', GLOB_ONLYDIR) ?: [] as $oldDir) {
+        if ($oldDir === $dir) continue;
+        $metaPath = $oldDir . '/meta.json';
+        $mtime    = file_exists($metaPath) ? filemtime($metaPath) : filectime($oldDir);
+        if ((time() - $mtime) > 7200) {
+            foreach (glob($oldDir . '/*') ?: [] as $f) {
+                @unlink($f);
+            }
+            @rmdir($oldDir);
+        }
+    }
+
+    // ── Return session descriptor ──
+    echo json_encode([
+        'session'      => $session,
+        'playlistUrl'  => 'stream.php?hls=serve&session=' . $session . '&file=playlist.m3u8',
+        'audioTracks'  => $audioTracks,
+        'subTracks'    => $subTracks,
+        'currentAudio' => $audioIdx,
+    ]);
+    exit;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── HLS Mode B: Serve a file from an existing session ──────────────────────
+// Usage: stream.php?hls=serve&session=<hex>&file=<filename>
+//
+// Polls until the file exists (up to 30 s for .m3u8, 15 s for .ts/.vtt),
+// then streams it with the correct Content-Type.  Segment serving waits for
+// the write to finish before sending (prevents truncated TS reads).
+// ═══════════════════════════════════════════════════════════════════════════
+if (isset($_GET['hls']) && $_GET['hls'] === 'serve') {
+    // Sanitise inputs — session is strictly hex, file is basename only
+    $session = preg_replace('/[^a-f0-9]/', '', $_GET['session'] ?? '');
+    $file    = basename($_GET['file'] ?? '');
+
+    if ($session === '' || $file === '') {
+        http_response_code(400);
+        exit;
+    }
+
+    $path = sys_get_temp_dir() . '/hls_' . $session . '/' . $file;
+    $ext  = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+
+    // ── VTT subtitles: smart wait ──────────────────────────────────────────
+    // ffmpeg's WebVTT muxer buffers all cues and flushes only at EOF.
+    // The subtitle file is created at process startup (0 bytes) and grows
+    // only after the entire source download completes (minutes later).
+    //
+    // Strategy:
+    //   • If file already has content → serve immediately.
+    //   • If file doesn't exist yet   → wait up to 3 s (ffmpeg hasn't started).
+    //   • If file exists but is 0 B   → 404 now; client retries on user action.
+    // ──────────────────────────────────────────────────────────────────────
+    if ($ext === 'vtt') {
+        clearstatcache(true, $path);
+        if (!file_exists($path)) {
+            // ffmpeg process may not have spawned yet — give it 3 s
+            $vttWaited = 0.0;
+            while ($vttWaited < 3.0) {
+                usleep(300000);
+                $vttWaited += 0.3;
+                clearstatcache(true, $path);
+                if (file_exists($path) && filesize($path) > 0) break;
+            }
+        }
+        clearstatcache(true, $path);
+        if (!file_exists($path) || filesize($path) === 0) {
+            // Subtitle extraction in progress (buffered until EOF) — not ready yet
+            http_response_code(404);
+            exit;
+        }
+        // VTT has content — fall through to serve it
+    } else {
+        // ── m3u8 / ts: poll until file appears ──
+        // Playlist needs more time (ffmpeg writes it after the first segment)
+        $maxWait = ($ext === 'm3u8') ? 30.0 : 15.0;
+        $waited  = 0.0;
+
+        while ($waited < $maxWait) {
+            clearstatcache(true, $path);
+            if (file_exists($path) && filesize($path) > 0) {
+                break;
+            }
+            usleep(300000); // 300 ms
+            $waited += 0.3;
+        }
+
+        clearstatcache(true, $path);
+        if (!file_exists($path) || filesize($path) === 0) {
+            http_response_code(404);
+            exit;
+        }
+    }
+
+    // ── TS segments: wait for the write to finish before serving ──
+    // ffmpeg writes segments sequentially; serving a partial segment causes
+    // HLS.js decode errors. We compare file sizes 150 ms apart and wait an
+    // extra 300 ms if the file is still growing.
+    if ($ext === 'ts') {
+        $size1 = filesize($path);
+        usleep(150000); // 150 ms
+        clearstatcache(true, $path);
+        $size2 = filesize($path);
+        if ($size2 > $size1) {
+            usleep(300000); // 300 ms more
+            clearstatcache(true, $path);
+        }
+    }
+
+    // ── Headers ──
+    $contentTypes = [
+        'm3u8' => 'application/vnd.apple.mpegurl',
+        'ts'   => 'video/mp2t',
+        'vtt'  => 'text/vtt',
+    ];
+    $ct = $contentTypes[$ext] ?? 'application/octet-stream';
+
+    header('Content-Type: ' . $ct);
+    header('Cache-Control: no-cache');
+    header('Access-Control-Allow-Origin: *');
+    header('Content-Length: ' . filesize($path));
+    readfile($path);
+    exit;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Transcode mode ──────────────────────────────────────────────────────────
 // Usage: stream.php?transcode=1&url=<full_encoded_url>
 // Reads the source URL with ffmpeg, copies video, transcodes audio EAC3→AAC,
 // and streams the result as a fragmented MP4 that any browser can play.
+// ═══════════════════════════════════════════════════════════════════════════
 $transcodeMode = isset($_GET['transcode']) && $_GET['transcode'] === '1';
 $videoUrl = $_GET['url'] ?? '';
 

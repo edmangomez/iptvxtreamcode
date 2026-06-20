@@ -8,17 +8,18 @@ if (empty($_SESSION['token'])) {
     exit;
 }
 
-$provider = $_SESSION['provider'];
+$provider  = $_SESSION['provider'];
 $serverUrl = 'http://' . $provider['server_url'];
-$username = $provider['username'];
-$password = $provider['password'];
+$username  = $provider['username'];
+$password  = $provider['password'];
 
-$type = $_GET['type'] ?? 'vod';
-$streamId = $_GET['id'] ?? '';
-$seriesId = $_GET['series_id'] ?? '';
-$name = $_GET['name'] ?? 'Reproduciendo';
-$ext = $_GET['ext'] ?? 'mp4';
-$poster = $_GET['poster'] ?? '';
+$type       = $_GET['type']          ?? 'vod';
+$streamId   = $_GET['id']            ?? '';
+$seriesId   = $_GET['series_id']     ?? '';
+$name       = $_GET['name']          ?? 'Reproduciendo';
+$ext        = $_GET['ext']           ?? 'mp4';
+$poster     = $_GET['poster']        ?? '';
+// $directSource intentionally ignored — build URL from standard format only
 $directSource = $_GET['direct_source'] ?? '';
 
 // Always build the stream URL from the standard format — $directSource is
@@ -28,10 +29,6 @@ if ($type === 'vod') {
 } else {
     $streamUrl = "$serverUrl/series/$username/$password/$streamId.$ext";
 }
-
-// Transcoding proxy URL: ffmpeg will re-encode audio EAC3→AAC so the
-// browser can decode it. Video track is stream-copied (no quality loss).
-$transcodedUrl = 'stream.php?transcode=1&url=' . urlencode($streamUrl);
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -56,6 +53,7 @@ $transcodedUrl = 'stream.php?transcode=1&url=' . urlencode($streamUrl);
         .info-bar .poster-thumb img { width: 100%; height: 100%; object-fit: cover; }
         .info-bar .poster-thumb .no-poster { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; color: var(--text-secondary); }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
 </head>
 <body>
     <div class="top-bar">
@@ -84,93 +82,231 @@ $transcodedUrl = 'stream.php?transcode=1&url=' . urlencode($streamUrl);
             <div><?= htmlspecialchars($name) ?></div>
             <small><?= $seriesId ? 'Serie' : 'Película' ?> · <?= htmlspecialchars($ext) ?></small>
         </div>
-        <div class="ms-auto d-flex align-items-center gap-2">
-            <span id="statusBadge" class="badge bg-secondary" style="display:none;">Cargando...</span>
+        <div class="ms-auto d-flex align-items-center gap-2 flex-wrap" id="controlBar">
+            <span id="statusBadge" class="badge bg-secondary" style="display:none">Iniciando...</span>
+            <div id="audioBar" class="d-flex gap-1" style="display:none"></div>
+            <div id="subBar"   class="d-flex gap-1" style="display:none"></div>
         </div>
     </div>
 
     <script>
-    // ========================================================================
-    // Configuration
-    // ========================================================================
-    const video        = document.getElementById('videoPlayer');
-    const streamUrl    = <?= json_encode($streamUrl) ?>;
-    const transcodedUrl = <?= json_encode($transcodedUrl) ?>;
-
-    const historyType     = <?= json_encode($type) ?>;
-    const historyId       = <?= json_encode($streamId) ?>;
-    const historySeriesId = <?= json_encode($seriesId) ?>;
-    const historyName     = <?= json_encode($name) ?>;
-    const historyPoster   = <?= json_encode($poster) ?>;
-
-    // ========================================================================
-    // DOM References
-    // ========================================================================
+    // =========================================================================
+    // Config — PHP values injected once, never duplicated
+    // =========================================================================
+    const video       = document.getElementById('videoPlayer');
+    const streamUrl   = <?= json_encode($streamUrl) ?>;
     const statusBadge = document.getElementById('statusBadge');
+    const audioBar    = document.getElementById('audioBar');
+    const subBar      = document.getElementById('subBar');
 
-    // ========================================================================
-    // History Recording
-    // ========================================================================
+    // =========================================================================
+    // History recording (fire-and-forget)
+    // =========================================================================
     fetch('/backend/api/history.php?action=record', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            type: historyType, stream_id: String(historyId),
-            series_id: historySeriesId || null, name: historyName, poster: historyPoster
+            type:      <?= json_encode($type) ?>,
+            stream_id: <?= json_encode($streamId) ?>,
+            series_id: <?= json_encode($seriesId ?: null) ?>,
+            name:      <?= json_encode($name) ?>,
+            poster:    <?= json_encode($poster) ?>
         })
     }).catch(() => {});
 
-    // ========================================================================
-    // STARTUP
-    //
-    // stream.php?transcode=1 handles ALL formats server-side via ffmpeg:
-    //   - Video H.264  → copy (fast, no re-encode)
-    //   - Video HEVC   → re-encode to H.264 (browser compatible)
-    //   - Audio AC3 / EAC3 / DTS / MP3 / … → always AAC 192k
-    //
-    // The transcoder takes 1-3s to produce first bytes (MKV header analysis).
-    // We give it 30s before considering it a failure.
-    // ========================================================================
-    (function init() {
-        statusBadge.textContent = 'Cargando...';
-        statusBadge.className   = 'badge bg-secondary';
+    // =========================================================================
+    // State
+    // =========================================================================
+    let hls         = null;
+    let sessionData = null;
+
+    // =========================================================================
+    // Start a new HLS session on the server
+    // Returns the parsed JSON descriptor ({ session, playlistUrl, audioTracks,
+    // subTracks, currentAudio }) or throws on network/server error.
+    // =========================================================================
+    async function startSession(audioIdx) {
+        statusBadge.textContent   = 'Iniciando...';
+        statusBadge.className     = 'badge bg-secondary';
         statusBadge.style.display = 'inline-block';
 
-        let fallbackTriggered = false;
+        const res = await fetch('stream.php?' + new URLSearchParams({
+            hls:   'start',
+            url:   streamUrl,
+            audio: audioIdx ?? 0
+        }));
+        if (!res.ok) throw new Error('Session start failed: ' + res.status);
+        return res.json();
+    }
 
-        // Fallback: only trigger after 30s of TOTAL silence
-        // (the transcoder needs ~2s to produce the first fragment)
-        const fallbackTimer = setTimeout(function () {
-            if (!fallbackTriggered && video.readyState === 0) {
-                fallbackTriggered = true;
-                video.onerror = null;
-                video.src = streamUrl;
-                video.play().catch(() => {});
-                statusBadge.style.display = 'none';
+    // =========================================================================
+    // Render audio-track buttons
+    // Hidden when there is only one track (nothing to choose from).
+    // =========================================================================
+    function renderAudioButtons(tracks, currentIdx) {
+        audioBar.innerHTML = '';
+        if (tracks.length <= 1) { audioBar.style.display = 'none'; return; }
+
+        tracks.forEach(t => {
+            const btn = document.createElement('button');
+            btn.className   = 'btn btn-xs ' + (t.index === currentIdx ? 'btn-primary' : 'btn-outline-secondary');
+            btn.style.fontSize = '0.75rem';
+            btn.style.padding  = '2px 8px';
+            btn.textContent = t.lang || ('Audio ' + (t.index + 1));
+            btn.onclick     = () => switchAudio(t.index);
+            audioBar.appendChild(btn);
+        });
+        audioBar.style.display = 'flex';
+    }
+
+    // =========================================================================
+    // Render subtitle-track buttons (always shows "Sub OFF" first)
+    // =========================================================================
+    function renderSubButtons(tracks) {
+        subBar.innerHTML = '';
+        if (tracks.length === 0) { subBar.style.display = 'none'; return; }
+
+        // "Off" button — active by default
+        const offBtn = document.createElement('button');
+        offBtn.className      = 'btn btn-xs btn-outline-secondary active';
+        offBtn.style.fontSize = '0.75rem';
+        offBtn.style.padding  = '2px 8px';
+        offBtn.textContent    = 'Sub OFF';
+        offBtn.dataset.idx    = '-1';
+        offBtn.onclick        = () => activateSub(-1);
+        subBar.appendChild(offBtn);
+
+        tracks.forEach(t => {
+            const btn = document.createElement('button');
+            btn.className      = 'btn btn-xs btn-outline-secondary';
+            btn.style.fontSize = '0.75rem';
+            btn.style.padding  = '2px 8px';
+            btn.textContent    = t.lang || ('Sub ' + (t.index + 1));
+            btn.dataset.idx    = t.index;
+            btn.onclick        = () => activateSub(t.index);
+            subBar.appendChild(btn);
+        });
+        subBar.style.display = 'flex';
+    }
+
+    // =========================================================================
+    // Activate a subtitle track (or turn off)
+    // Injects a <track> element pointing at the per-session VTT file served
+    // by stream.php?hls=serve&session=…&file=subN.vtt
+    // =========================================================================
+    function activateSub(idx) {
+        // Update button active states
+        subBar.querySelectorAll('button').forEach(btn => {
+            const isActive = parseInt(btn.dataset.idx) === idx;
+            btn.className      = 'btn btn-xs ' + (isActive ? 'btn-primary' : 'btn-outline-secondary');
+            btn.style.fontSize = '0.75rem';
+            btn.style.padding  = '2px 8px';
+        });
+
+        // Remove any existing <track> elements
+        video.querySelectorAll('track').forEach(t => t.remove());
+        if (idx < 0) return;
+
+        // Inject a new <track> pointing at the VTT served by the HLS session
+        const track    = document.createElement('track');
+        track.kind     = 'subtitles';
+        track.default  = true;
+        track.src      = 'stream.php?hls=serve&session=' + sessionData.session + '&file=sub' + idx + '.vtt';
+        video.appendChild(track);
+
+        // Some browsers need an explicit mode set after a tick
+        setTimeout(() => {
+            if (video.textTracks[0]) video.textTracks[0].mode = 'showing';
+        }, 200);
+    }
+
+    // =========================================================================
+    // Switch audio track — destroys the current HLS instance, starts a new
+    // session with the requested audio index, and resumes at the saved position.
+    // =========================================================================
+    async function switchAudio(idx) {
+        const savedTime = video.currentTime;
+        if (hls) { hls.destroy(); hls = null; }
+
+        try {
+            sessionData = await startSession(idx);
+            renderAudioButtons(sessionData.audioTracks, idx);
+            renderSubButtons(sessionData.subTracks);
+            await loadHls(sessionData.playlistUrl, savedTime);
+        } catch (e) {
+            console.error('[switchAudio]', e);
+            statusBadge.textContent = 'Error';
+            statusBadge.className   = 'badge bg-danger';
+        }
+    }
+
+    // =========================================================================
+    // Load an HLS playlist via HLS.js (with Safari native-HLS fallback).
+    // seekTo: resume position in seconds (0 = play from start).
+    // =========================================================================
+    function loadHls(playlistUrl, seekTo) {
+        if (hls) { hls.destroy(); hls = null; }
+
+        // Safari has native HLS — HLS.js not needed there
+        if (!Hls.isSupported()) {
+            video.src = playlistUrl;
+            if (seekTo > 1) {
+                video.addEventListener('loadedmetadata', () => {
+                    video.currentTime = seekTo;
+                }, { once: true });
             }
-        }, 30000);
-
-        video.src = transcodedUrl;
-        video.play().catch(() => {});
-
-        // Video started — clear the spinner
-        video.addEventListener('playing', function () {
-            clearTimeout(fallbackTimer);
+            video.play().catch(() => {});
             statusBadge.style.display = 'none';
-        }, { once: true });
+            return;
+        }
 
-        // onerror: transcoding failed hard (bad URL, server error, etc.)
-        // Wait 2s then retry once with direct URL
-        video.onerror = function () {
-            if (fallbackTriggered) return;
-            fallbackTriggered = true;
-            clearTimeout(fallbackTimer);
-            video.onerror = null;
+        hls = new Hls({
+            enableWorker:           true,
+            maxMaxBufferLength:     120,
+            manifestLoadingTimeOut: 30000,
+            levelLoadingTimeOut:    30000,
+            fragLoadingTimeOut:     30000,
+        });
+
+        hls.loadSource(playlistUrl);
+        hls.attachMedia(video);
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
             statusBadge.style.display = 'none';
-            setTimeout(function () {
-                video.src = streamUrl;
-                video.play().catch(() => {});
-            }, 1000);
-        };
+            if (seekTo > 1) video.currentTime = seekTo;
+            video.play().catch(() => {});
+        });
+
+        hls.on(Hls.Events.ERROR, (e, data) => {
+            if (!data.fatal) return;
+            console.error('[HLS fatal]', data.type, data.details);
+            hls.destroy();
+            hls = null;
+            // Last-resort fallback: direct URL (video works; AC3/EAC3 audio may not,
+            // but at least the picture appears and the user can hear AAC tracks)
+            statusBadge.style.display = 'none';
+            video.src = streamUrl;
+            video.play().catch(() => {});
+        });
+    }
+
+    // =========================================================================
+    // Startup — request session, render UI, begin playback
+    // Falls back to direct URL if the HLS session cannot be created.
+    // =========================================================================
+    (async function init() {
+        try {
+            sessionData = await startSession(0);
+            renderAudioButtons(sessionData.audioTracks, sessionData.currentAudio);
+            renderSubButtons(sessionData.subTracks);
+            loadHls(sessionData.playlistUrl, 0);
+        } catch (e) {
+            console.error('[init]', e);
+            // Could not start an HLS session — play direct stream as a last resort
+            statusBadge.style.display = 'none';
+            video.src = streamUrl;
+            video.play().catch(() => {});
+        }
     })();
     </script>
 </body>
