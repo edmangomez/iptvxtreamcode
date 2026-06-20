@@ -64,13 +64,17 @@ if ($transcodeMode && !empty($videoUrl)) {
     // ── Step 3: stream curl | ffmpeg → fragmented MP4 ──
     // ffmpeg segfaults when given HTTP URLs directly on this system,
     // so we pipe curl's output into ffmpeg stdin.
+    // -probesize 1M -analyzeduration 0: don't buffer 5MB before starting
+    //   (default probesize). Reduces time-to-first-byte from 15s to <1s.
+    // -fflags +genpts+discardcorrupt: generate timestamps + skip corrupt packets.
     // Audio: always transcode to AAC regardless of input (AC3, EAC3, DTS, MP3…)
     $curlCmd   = 'curl -s -L --max-time 7200 ' . escapeshellarg($videoUrl);
     $ffmpegCmd = $ffmpeg
         . ' -loglevel error'
+        . ' -probesize 1000000 -analyzeduration 0 -fflags +genpts+discardcorrupt'
         . ' -i pipe:0'
         . ' -map 0:v:0 -map 0:a:0'          // first video + first audio only
-        . ' ' . $videoOpts                   // video: copy H.264 or re-encode
+        . ' ' . $videoOpts                   // video: copy H.264 or re-encode HEVC/other
         . ' -c:a aac -b:a 192k'             // audio: always AAC (handles every input codec)
         . ' -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof'
         . ' pipe:1 2>/dev/null';

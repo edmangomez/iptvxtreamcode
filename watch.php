@@ -122,31 +122,54 @@ $transcodedUrl = 'stream.php?transcode=1&url=' . urlencode($streamUrl);
     // ========================================================================
     // STARTUP
     //
-    // stream.php?transcode=1 handles ALL formats server-side:
-    //   - Video H.264  → copy (fast)
+    // stream.php?transcode=1 handles ALL formats server-side via ffmpeg:
+    //   - Video H.264  → copy (fast, no re-encode)
     //   - Video HEVC   → re-encode to H.264 (browser compatible)
-    //   - Audio AC3/EAC3/DTS/MP3/… → always AAC
+    //   - Audio AC3 / EAC3 / DTS / MP3 / … → always AAC 192k
     //
-    // If transcoding fails for any reason, fall back to the direct URL.
+    // The transcoder takes 1-3s to produce first bytes (MKV header analysis).
+    // We give it 30s before considering it a failure.
     // ========================================================================
     (function init() {
+        statusBadge.textContent = 'Cargando...';
+        statusBadge.className   = 'badge bg-secondary';
         statusBadge.style.display = 'inline-block';
+
+        let fallbackTriggered = false;
+
+        // Fallback: only trigger after 30s of TOTAL silence
+        // (the transcoder needs ~2s to produce the first fragment)
+        const fallbackTimer = setTimeout(function () {
+            if (!fallbackTriggered && video.readyState === 0) {
+                fallbackTriggered = true;
+                video.onerror = null;
+                video.src = streamUrl;
+                video.play().catch(() => {});
+                statusBadge.style.display = 'none';
+            }
+        }, 30000);
 
         video.src = transcodedUrl;
         video.play().catch(() => {});
 
-        // Hide "Cargando" once video actually starts playing
-        video.addEventListener('playing', function onPlaying() {
-            video.removeEventListener('playing', onPlaying);
+        // Video started — clear the spinner
+        video.addEventListener('playing', function () {
+            clearTimeout(fallbackTimer);
             statusBadge.style.display = 'none';
         }, { once: true });
 
-        // If transcoding fails, fall back to direct URL silently
+        // onerror: transcoding failed hard (bad URL, server error, etc.)
+        // Wait 2s then retry once with direct URL
         video.onerror = function () {
+            if (fallbackTriggered) return;
+            fallbackTriggered = true;
+            clearTimeout(fallbackTimer);
             video.onerror = null;
             statusBadge.style.display = 'none';
-            video.src = streamUrl;
-            video.play().catch(() => {});
+            setTimeout(function () {
+                video.src = streamUrl;
+                video.play().catch(() => {});
+            }, 1000);
         };
     })();
     </script>
