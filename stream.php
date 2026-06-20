@@ -42,8 +42,9 @@ if ($transcodeMode && !empty($videoUrl)) {
     $ffmpegCmd = $ffmpeg
         . ' -loglevel error'
         . ' -i pipe:0'
-        . ' -c:v copy'
-        . ' -c:a aac -b:a 192k'
+        . ' -map 0:v:0 -map 0:a:0'   // only first video + first audio track
+        . ' -c:v copy -tag:v avc1'    // copy H.264, set avc1 tag so browsers recognise it
+        . ' -c:a aac -b:a 192k'       // transcode EAC3 → AAC
         . ' -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof'
         . ' pipe:1 2>/dev/null';
 
