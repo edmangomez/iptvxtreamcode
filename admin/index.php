@@ -26,8 +26,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         :root { --bg-primary: #0d1117; --bg-card: #161b22; --border: #30363d; --accent: #58a6ff; --text: #e6edf3; }
         body { background: var(--bg-primary); color: var(--text); display: flex; align-items: center; min-height: 100vh; }
         .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; }
+        .form-label { color: var(--text); }
         .form-control { background: #0d1117; border-color: var(--border); color: var(--text); }
         .form-control:focus { background: #0d1117; border-color: var(--accent); color: var(--text); }
+        h4 { color: var(--text); }
+        .alert-danger { background: rgba(248,81,73,0.15); border-color: var(--danger); color: #f85149; }
     </style>
 </head>
 <body>

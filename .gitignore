@@ -1,0 +1,4 @@
+backend/data/*.json
+backend/data/*.old
+*.log
+.env

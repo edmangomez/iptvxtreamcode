@@ -130,6 +130,23 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
         .episode-num { color: var(--text-secondary); font-size: 0.8rem; min-width: 2rem; }
         .episode-title { flex: 1; font-size: 0.9rem; }
         .episode-play { color: var(--accent); }
+
+        .recent-row { border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-bottom: 0.5rem; }
+        .recent-row .recent-header { font-size: 0.85rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.5rem; }
+        .recent-row .recent-header i { color: var(--accent); }
+        .recent-scroll { display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.25rem; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+        .recent-scroll::-webkit-scrollbar { height: 4px; }
+        .recent-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+        .recent-item { flex: 0 0 auto; width: 90px; cursor: pointer; text-align: center; transition: transform 0.15s; }
+        .recent-item:hover { transform: translateY(-2px); }
+        .recent-item .poster { width: 90px; height: 60px; border-radius: 6px; overflow: hidden; background: var(--bg-secondary); position: relative; }
+        .recent-item .poster img { width: 100%; height: 100%; object-fit: cover; }
+        .recent-item .poster .no-poster { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; color: var(--text-secondary); }
+        .recent-item .name { font-size: 0.7rem; color: var(--text-secondary); margin-top: 0.15rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .recent-item .badge-type { position: absolute; top: 2px; left: 2px; font-size: 0.55rem; padding: 1px 4px; border-radius: 3px; }
+        .recent-item .badge-live { background: var(--danger); color: #fff; }
+        .recent-item .badge-vod { background: var(--accent); color: #000; }
+        .recent-item .badge-series { background: var(--warning); color: #000; }
     </style>
 </head>
 <body>
@@ -155,6 +172,11 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
             </div>
         </div>
     </nav>
+
+    <div id="recentContainer" class="container-fluid mt-1 recent-row" style="display:none">
+        <div class="recent-header mb-1"><i class="bi bi-clock-history"></i>Recientes</div>
+        <div id="recentScroll" class="recent-scroll"></div>
+    </div>
 
     <div class="container-fluid mt-2">
         <div class="row g-2 main-row">
@@ -260,6 +282,7 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
         destroyHls();
 
         const streamId = stream.stream_id || stream.id;
+        recordHistory({ type: 'live', stream_id: String(streamId), name: name, poster: stream.stream_icon || '' });
         const streamUrl = `${serverUrl}/live/${username}/${password}/${streamId}.m3u8`;
 
         if (Hls.isSupported()) {
@@ -320,29 +343,17 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
 
         [{ el: desktop, isPill: false }, { el: mobile, isPill: true }, { el: vodPills, isPill: true }].forEach(({ el, isPill }) => {
             if (!el) return;
-            const all = document.createElement(isPill ? 'button' : 'a');
-            if (isPill) {
-                all.className = 'btn btn-sm cat-pill' + (currentCategory === null ? ' active' : '');
-                all.textContent = 'Todas';
-                all.onclick = () => { currentCategory = null; selectPill(all); loadSectionContent(type); };
-            } else {
-                all.href = '#';
-                all.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center' + (currentCategory === null ? ' active' : '');
-                const total = (cats || []).length > 0 ? cats.reduce((a, c) => a + parseInt(c.num_streams || 0), 0) : '';
-                all.innerHTML = `<span><i class="bi bi-grid me-2"></i>Todas</span><span class="badge bg-secondary">${total}</span>`;
-                all.onclick = () => { currentCategory = null; loadSectionContent(type); };
-            }
-            el.appendChild(all);
 
-            (cats || []).forEach(cat => {
+            (cats || []).forEach((cat, idx) => {
                 const e = document.createElement(isPill ? 'button' : 'a');
+                const isActive = currentCategory == cat.category_id;
                 if (isPill) {
-                    e.className = 'btn btn-sm cat-pill';
+                    e.className = 'btn btn-sm cat-pill' + (isActive ? ' active' : '');
                     e.textContent = cat.category_name;
                     e.onclick = () => { currentCategory = cat.category_id; selectPill(e); loadSectionContent(type); };
                 } else {
                     e.href = '#';
-                    e.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+                    e.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center' + (isActive ? ' active' : '');
                     e.innerHTML = `<span>${cat.category_name}</span><span class="badge bg-secondary">${cat.num_streams || ''}</span>`;
                     e.onclick = () => { currentCategory = cat.category_id; loadSectionContent(type); };
                 }
@@ -404,8 +415,8 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
 
         let data;
         try {
-            if (currentCategory) data = await loadStreams(currentCategory, type);
-            else data = await loadAllStreams(type);
+            if (!currentCategory) { hideLoading(); return; }
+            data = await loadStreams(currentCategory, type);
 
             if (filter) {
                 const lf = filter.toLowerCase();
@@ -442,12 +453,18 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
                     <div class="movie-card-body"><h6>${title}</h6></div>
                 `;
                 if (type === 'series') {
-                    card.onclick = () => showSeriesEpisodes(stream);
+                    card.onclick = () => {
+                        const sid = stream.series_id || stream.id;
+                        recordHistory({ type: 'series', stream_id: String(sid), name: title, poster: poster });
+                        showSeriesEpisodes(stream);
+                    };
                 } else {
                     card.onclick = () => {
                         const sid = stream.stream_id || stream.id;
                         const ext = stream.container_extension || 'mp4';
-                        window.location.href = `watch.php?type=vod&id=${sid}&name=${encodeURIComponent(title)}&ext=${ext}&poster=${encodeURIComponent(poster)}`;
+                        const ds = stream.direct_source || '';
+                        recordHistory({ type: 'vod', stream_id: String(sid), name: title, poster: poster });
+                        window.location.href = `watch.php?type=vod&id=${sid}&name=${encodeURIComponent(title)}&ext=${ext}&poster=${encodeURIComponent(poster)}&direct_source=${encodeURIComponent(ds)}`;
                     };
                 }
                 grid.appendChild(card);
@@ -511,7 +528,9 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
                 `;
                 row.onclick = () => {
                     const ext = ep.container_extension || 'mp4';
-                    window.location.href = `watch.php?type=series&id=${epId}&series_id=${seriesId}&name=${encodeURIComponent(epTitle)}&ext=${ext}&poster=${encodeURIComponent(series.stream_icon || series.cover || '')}`;
+                    const ds = ep.direct_source || '';
+                    recordHistory({ type: 'series', stream_id: String(epId), series_id: String(seriesId), name: epTitle, poster: series.stream_icon || series.cover || '', season_num: season, episode_num: epNum });
+                    window.location.href = `watch.php?type=series&id=${epId}&series_id=${seriesId}&name=${encodeURIComponent(epTitle)}&ext=${ext}&poster=${encodeURIComponent(series.stream_icon || series.cover || '')}&direct_source=${encodeURIComponent(ds)}`;
                 };
                 group.appendChild(row);
             });
@@ -524,21 +543,6 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
     function closeEpisodes() {
         document.getElementById('episodeContainer').style.display = 'none';
         document.getElementById('streamGrid').style.display = 'block';
-    }
-
-    async function loadAllStreams(type) {
-        const ck = `${type}_all_${username}`;
-        if (streams[ck]) return streams[ck];
-        const action = type === 'series' ? 'get_series' : `get_${type}_streams`;
-        const url = `/backend/api/proxy.php?action=${action}`;
-        try {
-            const resp = await fetch(url);
-            const data = await resp.json();
-            streams[ck] = data || [];
-            return streams[ck];
-        } catch (e) {
-            return [];
-        }
     }
 
     function switchSection(section) {
@@ -562,8 +566,53 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
             document.getElementById('nowPlaying').style.display = 'none';
         }
 
-        renderCategories(categories[section], section);
+        const cats = categories[section] || [];
+        if (cats.length > 0) {
+            currentCategory = cats[0].category_id;
+        }
+        renderCategories(cats, section);
         loadSectionContent(section);
+    }
+
+    async function recordHistory(item) {
+        try { await fetch('/backend/api/history.php?action=record', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(item) }); } catch {}
+    }
+
+    async function loadRecentHistory() {
+        try {
+            const resp = await fetch('/backend/api/history.php?action=get&limit=15');
+            const data = await resp.json();
+            if (!data || data.length === 0) { document.getElementById('recentContainer').style.display = 'none'; return; }
+            document.getElementById('recentContainer').style.display = '';
+            const scroll = document.getElementById('recentScroll');
+            scroll.innerHTML = '';
+            data.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'recent-item';
+                const badgeClass = item.type === 'live' ? 'badge-live' : item.type === 'vod' ? 'badge-vod' : 'badge-series';
+                const badgeLabel = item.type === 'live' ? 'LIVE' : item.type === 'vod' ? 'VOD' : 'SERIE';
+                div.innerHTML = `
+                    <div class="poster">
+                        ${item.poster ? `<img src="${item.poster}" alt="" loading="lazy" onerror="this.parentElement.innerHTML='<div class=no-poster><i class=\\'bi bi-tv\\'></i></div>'">`
+                            : `<div class="no-poster"><i class="bi bi-tv"></i></div>`}
+                        <span class="badge-type ${badgeClass}">${badgeLabel}</span>
+                    </div>
+                    <div class="name" title="${item.name}">${item.name}</div>
+                `;
+                div.onclick = () => {
+                    if (item.type === 'live') {
+                        switchSection('live');
+                    } else if (item.type === 'vod') {
+                        window.location.href = `watch.php?type=vod&id=${item.stream_id}&name=${encodeURIComponent(item.name)}&poster=${encodeURIComponent(item.poster || '')}`;
+                    } else if (item.type === 'series') {
+                        if (item.stream_id) {
+                            window.location.href = `watch.php?type=series&id=${item.stream_id}&series_id=${item.series_id || ''}&name=${encodeURIComponent(item.name)}&poster=${encodeURIComponent(item.poster || '')}`;
+                        }
+                    }
+                };
+                scroll.appendChild(div);
+            });
+        } catch {}
     }
 
     document.getElementById('vodSearch').oninput = e => renderStreams(currentSection, e.target.value);
@@ -576,6 +625,7 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
     const params = new URLSearchParams(window.location.search);
     const initialSection = params.get('section') || 'live';
     switchSection(initialSection);
+    loadRecentHistory();
     </script>
 </body>
 </html>
