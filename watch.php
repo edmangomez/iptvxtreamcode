@@ -19,12 +19,19 @@ $seriesId = $_GET['series_id'] ?? '';
 $name = $_GET['name'] ?? 'Reproduciendo';
 $ext = $_GET['ext'] ?? 'mp4';
 $poster = $_GET['poster'] ?? '';
+$directSource = $_GET['direct_source'] ?? '';
 
+// Always build the stream URL from the standard format — $directSource is
+// less reliable (can differ per provider) and is intentionally ignored here.
 if ($type === 'vod') {
     $streamUrl = "$serverUrl/movie/$username/$password/$streamId.$ext";
 } else {
     $streamUrl = "$serverUrl/series/$username/$password/$streamId.$ext";
 }
+
+// Transcoding proxy URL: ffmpeg will re-encode audio EAC3→AAC so the
+// browser can decode it. Video track is stream-copied (no quality loss).
+$transcodedUrl = 'stream.php?transcode=1&url=' . urlencode($streamUrl);
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -42,7 +49,7 @@ if ($type === 'vod') {
         .top-bar a { color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
         .top-bar a:hover { color: var(--text-primary); }
         .top-bar .title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .player-container { flex: 1; display: flex; align-items: center; justify-content: center; }
+        .player-container { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; }
         .player-container video { max-width: 100%; max-height: 100%; }
         .info-bar { background: var(--bg-secondary); border-top: 1px solid var(--border); padding: 0.5rem 1rem; font-size: 0.85rem; color: var(--text-secondary); flex-shrink: 0; display: flex; align-items: center; gap: 1rem; }
         .info-bar .poster-thumb { width: 40px; height: 56px; border-radius: 4px; overflow: hidden; flex-shrink: 0; background: var(--bg-primary); }
@@ -62,9 +69,7 @@ if ($type === 'vod') {
     </div>
 
     <div class="player-container">
-        <video id="videoPlayer" controls autoplay playsinline>
-            <source src="<?= htmlspecialchars($streamUrl) ?>" type="video/mp4">
-        </video>
+        <video id="videoPlayer" controls autoplay playsinline></video>
     </div>
 
     <div class="info-bar">
@@ -79,6 +84,90 @@ if ($type === 'vod') {
             <div><?= htmlspecialchars($name) ?></div>
             <small><?= $seriesId ? 'Serie' : 'Película' ?> · <?= htmlspecialchars($ext) ?></small>
         </div>
+        <div class="ms-auto d-flex align-items-center gap-2">
+            <span id="audioBadge" class="badge" style="display:none;"></span>
+        </div>
     </div>
+
+    <script>
+    // ========================================================================
+    // Configuration
+    // ========================================================================
+    const video        = document.getElementById('videoPlayer');
+    const streamUrl    = <?= json_encode($streamUrl) ?>;
+    const transcodedUrl = <?= json_encode($transcodedUrl) ?>;
+
+    const historyType     = <?= json_encode($type) ?>;
+    const historyId       = <?= json_encode($streamId) ?>;
+    const historySeriesId = <?= json_encode($seriesId) ?>;
+    const historyName     = <?= json_encode($name) ?>;
+    const historyPoster   = <?= json_encode($poster) ?>;
+
+    // ========================================================================
+    // DOM References
+    // ========================================================================
+    const audioBadge = document.getElementById('audioBadge');
+
+    // ========================================================================
+    // History Recording
+    // ========================================================================
+    fetch('/backend/api/history.php?action=record', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+            type: historyType, stream_id: String(historyId),
+            series_id: historySeriesId || null, name: historyName, poster: historyPoster
+        })
+    }).catch(() => {});
+
+    // ========================================================================
+    // Audio Status UI
+    // ========================================================================
+    function showAudioOk() {
+        audioBadge.style.display = 'inline-block';
+        audioBadge.textContent   = '✅ Audio AAC';
+        audioBadge.className     = 'badge bg-success';
+    }
+
+    function showAudioWarning() {
+        audioBadge.style.display = 'inline-block';
+        audioBadge.textContent   = '🔇 Sin audio (AC3)';
+        audioBadge.className     = 'badge bg-warning text-dark';
+    }
+
+    // ========================================================================
+    // STARTUP
+    //
+    // 1. Try transcoding proxy first (video copy + audio AAC → browser-safe)
+    // 2. If ffmpeg transcoding fails, fall back to direct URL (video only,
+    //    AC3 audio not decodable in browsers) and show a warning badge.
+    // ========================================================================
+    (function init() {
+        // --- Attempt 1: transcoded stream (audio works) ---
+        video.src = transcodedUrl;
+        video.play().catch(() => {});
+
+        video.onerror = function () {
+            console.warn('[watch] Transcoding failed, falling back to direct URL');
+
+            // Remove this handler before setting the new src so it doesn't
+            // fire again on the fallback source.
+            video.onerror = null;
+
+            video.src = streamUrl;
+            video.play().catch(() => {});
+
+            showAudioWarning();
+        };
+
+        // Transcoding started without error → mark audio as OK once metadata loads
+        video.addEventListener('loadedmetadata', function onMeta() {
+            video.removeEventListener('loadedmetadata', onMeta);
+            // Only show "AAC" badge if we're still on the transcoded URL
+            if (video.src.includes('transcode=1')) {
+                showAudioOk();
+            }
+        }, { once: true });
+    })();
+    </script>
 </body>
 </html>
