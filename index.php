@@ -8,6 +8,7 @@ if (!empty($_SESSION['token'])) {
 }
 
 $error = '';
+$authSource = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $result = loginUser($_POST['username'] ?? '', $_POST['password'] ?? '');
     if (isset($result['error'])) {
@@ -17,6 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['user'] = $result['user'];
         $_SESSION['provider'] = $result['provider'];
         $_SESSION['subscription'] = $result['subscription'];
+        $_SESSION['auth_source'] = $result['auth_source'] ?? 'local';
         header('Location: player.php');
         exit;
     }

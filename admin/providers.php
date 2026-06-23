@@ -42,6 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="d-flex gap-2">
                 <a href="users.php" class="btn btn-outline-secondary btn-sm">Usuarios</a>
                 <a href="subscriptions.php" class="btn btn-outline-secondary btn-sm">Suscripciones</a>
+                <a href="settings.php" class="btn btn-outline-secondary btn-sm">Configuracion</a>
                 <a href="logout.php" class="btn btn-outline-danger btn-sm">Salir</a>
             </div>
         </div>

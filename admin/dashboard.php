@@ -28,6 +28,7 @@ $subs = getJSON('user_subscriptions');
                 <a href="users.php" class="btn btn-outline-secondary btn-sm">Usuarios</a>
                 <a href="providers.php" class="btn btn-outline-secondary btn-sm">Providers</a>
                 <a href="subscriptions.php" class="btn btn-outline-secondary btn-sm">Suscripciones</a>
+                <a href="settings.php" class="btn btn-outline-secondary btn-sm">Configuracion</a>
                 <a href="logout.php" class="btn btn-outline-danger btn-sm">Salir</a>
             </div>
         </div>

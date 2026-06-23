@@ -14,6 +14,108 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+function getNullRedirection() {
+    return PHP_OS_FAMILY === 'Windows' ? '2>NUL' : '2>/dev/null';
+}
+
+function isCommandAvailable($command) {
+    $cmd = $command . ' -version ' . getNullRedirection();
+    $out = @shell_exec($cmd);
+    return is_string($out) && trim($out) !== '';
+}
+
+function resolveFfmpegTools() {
+    $root = __DIR__;
+    $candidates = [
+        [
+            'ffmpeg' => '/tmp/ffmpeg-7.0.2-amd64-static/ffmpeg',
+            'ffprobe' => '/tmp/ffmpeg-7.0.2-amd64-static/ffprobe',
+        ],
+        [
+            'ffmpeg' => $root . '/desktop/bin/ffmpeg/win/ffmpeg.exe',
+            'ffprobe' => $root . '/desktop/bin/ffmpeg/win/ffprobe.exe',
+        ],
+        [
+            'ffmpeg' => $root . '/desktop/bin/ffmpeg/linux/ffmpeg',
+            'ffprobe' => $root . '/desktop/bin/ffmpeg/linux/ffprobe',
+        ],
+        [
+            'ffmpeg' => $root . '/desktop/bin/ffmpeg/mac/ffmpeg',
+            'ffprobe' => $root . '/desktop/bin/ffmpeg/mac/ffprobe',
+        ],
+    ];
+
+    foreach ($candidates as $pair) {
+        if (is_file($pair['ffmpeg']) && is_file($pair['ffprobe'])) {
+            return $pair;
+        }
+    }
+
+    if (isCommandAvailable('ffmpeg') && isCommandAvailable('ffprobe')) {
+        return ['ffmpeg' => 'ffmpeg', 'ffprobe' => 'ffprobe'];
+    }
+
+    return null;
+}
+
+function buildAbsoluteUrl($url, $baseUrl) {
+    if (preg_match('#^https?://#i', $url)) {
+        return $url;
+    }
+
+    $base = parse_url($baseUrl);
+    $scheme = $base['scheme'] ?? 'http';
+    $host = $base['host'] ?? '';
+    $port = isset($base['port']) ? ':' . $base['port'] : '';
+    $path = $base['path'] ?? '/';
+    $dir = rtrim(str_replace('\\', '/', dirname($path)), '/');
+    if ($dir === '.') {
+        $dir = '';
+    }
+
+    if (strpos($url, '//') === 0) {
+        return $scheme . ':' . $url;
+    }
+    if (strpos($url, '/') === 0) {
+        return $scheme . '://' . $host . $port . $url;
+    }
+
+    return $scheme . '://' . $host . $port . ($dir ? $dir . '/' : '/') . $url;
+}
+
+function proxifyUrl($absoluteUrl) {
+    return 'stream.php?url=' . rawurlencode($absoluteUrl);
+}
+
+function rewriteM3u8Body($body, $baseUrl) {
+    $lines = preg_split('/\r\n|\n|\r/', (string)$body);
+    $out = [];
+
+    foreach ($lines as $line) {
+        $trim = trim($line);
+        if ($trim === '') {
+            $out[] = $line;
+            continue;
+        }
+
+        if ($trim[0] === '#') {
+            if (strpos($line, 'URI="') !== false) {
+                $line = preg_replace_callback('/URI="([^"]+)"/', function ($m) use ($baseUrl) {
+                    $abs = buildAbsoluteUrl($m[1], $baseUrl);
+                    return 'URI="' . proxifyUrl($abs) . '"';
+                }, $line);
+            }
+            $out[] = $line;
+            continue;
+        }
+
+        $abs = buildAbsoluteUrl($trim, $baseUrl);
+        $out[] = proxifyUrl($abs);
+    }
+
+    return implode("\n", $out);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ── HLS Mode A: Start a new HLS transcoding session ────────────────────────
 // Usage: stream.php?hls=start&url=<encoded_url>[&audio=<idx>]
@@ -34,14 +136,21 @@ if (isset($_GET['hls']) && $_GET['hls'] === 'start') {
 
     $audioIdx = max(0, (int)($_GET['audio'] ?? 0));
 
-    $ffmpeg  = '/tmp/ffmpeg-7.0.2-amd64-static/ffmpeg';
-    $ffprobe = '/tmp/ffmpeg-7.0.2-amd64-static/ffprobe';
+    if (PHP_OS_FAMILY === 'Windows') {
+        http_response_code(501);
+        echo json_encode(['error' => 'hls-start no soportado en Windows, use transcode']);
+        exit;
+    }
 
-    if (!is_executable($ffmpeg) || !is_executable($ffprobe)) {
+    $tools = resolveFfmpegTools();
+    if (!$tools) {
         http_response_code(500);
         echo json_encode(['error' => 'ffmpeg not available']);
         exit;
     }
+
+    $ffmpeg = $tools['ffmpeg'];
+    $ffprobe = $tools['ffprobe'];
 
     // ── Generate unique session & working directory ──
     $session = bin2hex(random_bytes(8));
@@ -297,24 +406,25 @@ if ($transcodeMode && !empty($videoUrl)) {
         exit;
     }
 
-    $ffmpeg  = '/tmp/ffmpeg-7.0.2-amd64-static/ffmpeg';
-    $ffprobe = '/tmp/ffmpeg-7.0.2-amd64-static/ffprobe';
-
-    if (!is_executable($ffmpeg) || !is_executable($ffprobe)) {
+    $tools = resolveFfmpegTools();
+    if (!$tools) {
         http_response_code(500);
         echo json_encode(['error' => 'ffmpeg not available']);
         exit;
     }
 
+    $ffmpeg = $tools['ffmpeg'];
+    $ffprobe = $tools['ffprobe'];
+    $nullRedir = getNullRedirection();
+
     // ── Step 1: detect video codec from first 128 KB (fast Range request) ──
     // ffprobe with -probesize 131072 -analyzeduration 0 reads just enough to
     // identify codec names without downloading the whole file.
-    $probeCmd = 'curl -s -L --max-time 10 -H "Range: bytes=0-131071" '
-              . escapeshellarg($videoUrl)
-              . ' | ' . $ffprobe
+    $probeCmd = escapeshellarg($ffprobe)
               . ' -v error -probesize 131072 -analyzeduration 0'
               . ' -show_entries stream=codec_name,codec_type'
-              . ' -of csv=p=0 -i pipe:0 2>/dev/null';
+              . ' -of csv=p=0 -i ' . escapeshellarg($videoUrl)
+              . ' ' . $nullRedir;
     $probeOut = shell_exec($probeCmd) ?? '';
 
     // ── Step 2: choose video encoding strategy based on detected codec ──
@@ -337,18 +447,17 @@ if ($transcodeMode && !empty($videoUrl)) {
     //   (default probesize). Reduces time-to-first-byte from 15s to <1s.
     // -fflags +genpts+discardcorrupt: generate timestamps + skip corrupt packets.
     // Audio: always transcode to AAC regardless of input (AC3, EAC3, DTS, MP3…)
-    $curlCmd   = 'curl -s -L --max-time 7200 ' . escapeshellarg($videoUrl);
-    $ffmpegCmd = $ffmpeg
+    $ffmpegCmd = escapeshellarg($ffmpeg)
         . ' -loglevel error'
         . ' -probesize 1000000 -analyzeduration 0 -fflags +genpts+discardcorrupt'
-        . ' -i pipe:0'
+        . ' -i ' . escapeshellarg($videoUrl)
         . ' -map 0:v:0 -map 0:a:0'          // first video + first audio only
         . ' ' . $videoOpts                   // video: copy H.264 or re-encode HEVC/other
         . ' -c:a aac -b:a 192k'             // audio: always AAC (handles every input codec)
         . ' -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof'
-        . ' pipe:1 2>/dev/null';
+        . ' pipe:1 ' . $nullRedir;
 
-    $cmd = $curlCmd . ' | ' . $ffmpegCmd;
+    $cmd = $ffmpegCmd;
 
     header('Content-Type: video/mp4');
     header('Cache-Control: no-cache, no-store');
@@ -387,6 +496,8 @@ if (!empty($directUrl)) {
         exit;
     }
 
+    $directExt = strtolower(pathinfo(parse_url($directUrl, PHP_URL_PATH), PATHINFO_EXTENSION));
+
     $ch = curl_init();
 
     // Forward client headers so the provider gets a realistic browser-like request
@@ -409,6 +520,72 @@ if (!empty($directUrl)) {
 
     // Detect HEAD requests (used by watch.php to probe HLS existence)
     $isHead = ($_SERVER['REQUEST_METHOD'] === 'HEAD');
+
+    // TS passthrough mode (stream chunks, do not buffer full response)
+    if ($directExt === 'ts' && !$isHead) {
+        @ini_set('output_buffering', 0);
+        @ini_set('zlib.output_compression', 0);
+        while (ob_get_level() > 0) {
+            @ob_end_flush();
+        }
+        ignore_user_abort(true);
+        set_time_limit(0);
+
+        header('Content-Type: video/mp2t');
+        header('Cache-Control: no-cache');
+        header('Access-Control-Allow-Origin: *');
+
+        $cmdParts = [
+            'curl',
+            '-L',
+            '--connect-timeout',
+            '10',
+            '--max-time',
+            '0',
+            '-s',
+        ];
+
+        if (isset($_SERVER['HTTP_RANGE']) && trim($_SERVER['HTTP_RANGE']) !== '') {
+            $cmdParts[] = '-H';
+            $cmdParts[] = escapeshellarg('Range: ' . $_SERVER['HTTP_RANGE']);
+        }
+
+        if (isset($_SERVER['HTTP_USER_AGENT']) && trim($_SERVER['HTTP_USER_AGENT']) !== '') {
+            $cmdParts[] = '-H';
+            $cmdParts[] = escapeshellarg('User-Agent: ' . $_SERVER['HTTP_USER_AGENT']);
+        }
+
+        $cmdParts[] = escapeshellarg($directUrl);
+        $nullRedir = (PHP_OS_FAMILY === 'Windows') ? '2>NUL' : '2>/dev/null';
+        $cmd = implode(' ', $cmdParts) . ' ' . $nullRedir;
+
+        $proc = @popen($cmd, 'rb');
+        if (!is_resource($proc)) {
+            http_response_code(502);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Proxy stream error: cannot start curl process']);
+            exit;
+        }
+
+        $total = 0;
+        while (!feof($proc)) {
+            $chunk = fread($proc, 65536);
+            if ($chunk === false) {
+                break;
+            }
+            if ($chunk !== '') {
+                $total += strlen($chunk);
+                echo $chunk;
+                flush();
+            }
+        }
+        pclose($proc);
+
+        if ($total === 0) {
+            http_response_code(404);
+        }
+        exit;
+    }
 
     curl_setopt($ch, CURLOPT_URL, $directUrl);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
@@ -477,9 +654,19 @@ if (!empty($directUrl)) {
         exit;
     }
 
+    $ext = $directExt;
+    $contentType = strtolower((string)($info['content_type'] ?? ''));
+    $isM3u8 = ($ext === 'm3u8' || $ext === 'm3u' || strpos($contentType, 'mpegurl') !== false || strpos($contentType, 'vnd.apple.mpegurl') !== false);
+
+    if ($isM3u8) {
+        $rewritten = rewriteM3u8Body($body, $directUrl);
+        header('Content-Type: application/vnd.apple.mpegurl');
+        echo $rewritten;
+        exit;
+    }
+
     // Ensure content-type for TS segments (HLS.js needs it)
     if (empty($info['content_type'])) {
-        $ext = strtolower(pathinfo(parse_url($directUrl, PHP_URL_PATH), PATHINFO_EXTENSION));
         if ($ext === 'ts') {
             header('Content-Type: video/mp2t');
         } elseif ($ext === 'm3u8' || $ext === 'm3u') {

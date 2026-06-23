@@ -119,6 +119,7 @@ if ($type === 'vod') {
     // =========================================================================
     let hls         = null;
     let sessionData = null;
+    const isWindowsServer = <?= json_encode(PHP_OS_FAMILY === 'Windows') ?>;
 
     // =========================================================================
     // Start a new HLS session on the server
@@ -295,6 +296,18 @@ if ($type === 'vod') {
     // Falls back to direct URL if the HLS session cannot be created.
     // =========================================================================
     (async function init() {
+        if (isWindowsServer) {
+            statusBadge.style.display = 'none';
+            const transcodeUrl = 'stream.php?transcode=1&url=' + encodeURIComponent(streamUrl);
+            video.src = transcodeUrl;
+            video.play().catch(() => {
+                statusBadge.style.display = 'inline-block';
+                statusBadge.textContent = 'Tap Play';
+                statusBadge.className = 'badge bg-warning text-dark';
+            });
+            return;
+        }
+
         try {
             sessionData = await startSession(0);
             renderAudioButtons(sessionData.audioTracks, sessionData.currentAudio);

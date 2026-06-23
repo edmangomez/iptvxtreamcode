@@ -84,7 +84,37 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
         .list-group-item.active { background-color: var(--accent); border-color: var(--accent); color: #000; }
         .user-info { font-size: 0.85rem; color: var(--text-secondary); }
         .player-wrapper { aspect-ratio: 16/9; background: #000; border-radius: 10px; overflow: hidden; position: relative; }
-        .player-wrapper video { width: 100%; height: 100%; object-fit: contain; }
+        .player-grid { display: grid; width: 100%; height: 100%; gap: 0.35rem; padding: 0.35rem; background: #000; }
+        .player-grid.single { grid-template-columns: 1fr; }
+        .player-grid.dual { grid-template-columns: 1fr 1fr; }
+        .live-slot { position: relative; border: 1px solid #1f2937; border-radius: 8px; overflow: hidden; background: #000; }
+        .live-slot video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+        .live-slot.inactive { opacity: 0.86; }
+        .live-slot-badge { position: absolute; top: 6px; left: 6px; z-index: 5; font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; background: rgba(0,0,0,0.75); color: #e6edf3; }
+        .live-slot-status { position: absolute; top: 6px; right: 6px; z-index: 5; font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: rgba(0,0,0,0.75); color: #8b949e; }
+        .live-slot-status.ok { color: #3fb950; }
+        .live-slot-status.warn { color: #d29922; }
+        .live-slot-status.err { color: #f85149; }
+        .live-slot.active-slot { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(88,166,255,0.45) inset; }
+        .live-controls { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+        .live-controls .btn { font-size: 0.75rem; padding: 0.2rem 0.55rem; }
+        #playerWrapper:fullscreen,
+        #playerWrapper:-webkit-full-screen {
+            width: 100vw;
+            height: 100vh;
+            aspect-ratio: auto;
+            border-radius: 0;
+        }
+        #playerWrapper:fullscreen .player-grid,
+        #playerWrapper:-webkit-full-screen .player-grid {
+            width: 100%;
+            height: 100%;
+            padding: 0.5rem;
+        }
+        #playerWrapper:fullscreen .live-slot,
+        #playerWrapper:-webkit-full-screen .live-slot {
+            border-radius: 10px;
+        }
 
         .cat-pills { scrollbar-width: none; -ms-overflow-style: none; }
         .cat-pills::-webkit-scrollbar { display: none; }
@@ -106,6 +136,7 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
             .movie-grid { grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
             .scroll-area { max-height: none !important; }
             .main-row > [class*="col-"] { padding-bottom: 0.5rem; }
+            .player-grid.dual { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
         }
         @media (min-width: 768px) and (max-width: 991.98px) {
             .movie-grid { grid-template-columns: repeat(3, 1fr); }
@@ -166,6 +197,7 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
                     <div class="user-info text-end d-none d-md-block">
                         <div><?= htmlspecialchars($_SESSION['user']['username']) ?></div>
                         <div class="small">Expira: <?= $subscription['end_date'] ?></div>
+                        <div class="small">Auth: <?= htmlspecialchars($_SESSION['auth_source'] ?? 'local') ?></div>
                     </div>
                     <a href="logout.php" class="btn btn-outline-danger btn-sm"><i class="bi bi-box-arrow-left"></i></a>
                 </div>
@@ -192,10 +224,35 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
             <!-- LIVE: player column -->
             <div class="col-lg-6 col-md-5 col-12" id="livePlayerCol">
                 <div class="player-wrapper" id="playerWrapper">
-                    <video id="videoPlayer" class="w-100 h-100" controls playsinline></video>
+                    <div id="playerGrid" class="player-grid single">
+                        <div id="slotAContainer" class="live-slot active-slot" ondblclick="toggleLiveFullscreen()">
+                            <span class="live-slot-badge">A</span>
+                            <span id="slotAStatus" class="live-slot-status">Idle</span>
+                            <video id="videoPlayerA" class="w-100 h-100" controls playsinline></video>
+                        </div>
+                        <div id="slotBContainer" class="live-slot" style="display:none" ondblclick="toggleLiveFullscreen()">
+                            <span class="live-slot-badge">B</span>
+                            <span id="slotBStatus" class="live-slot-status">Idle</span>
+                            <video id="videoPlayerB" class="w-100 h-100" controls playsinline muted></video>
+                        </div>
+                    </div>
                 </div>
 
-                <div id="nowPlaying" class="now-playing mt-2 d-flex align-items-center justify-content-between" style="display:none !important;">
+                <div class="live-controls mt-2">
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Vista">
+                        <button id="btnSingleView" type="button" class="btn btn-outline-secondary">Single</button>
+                        <button id="btnDualView" type="button" class="btn btn-outline-secondary">Dual</button>
+                    </div>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Slot">
+                        <button id="btnSlotA" type="button" class="btn btn-outline-primary">Slot A</button>
+                        <button id="btnSlotB" type="button" class="btn btn-outline-primary">Slot B</button>
+                    </div>
+                    <button id="btnLiveFullscreen" type="button" class="btn btn-outline-light btn-sm">
+                        <i class="bi bi-arrows-fullscreen me-1"></i>Fullscreen
+                    </button>
+                </div>
+
+                <div id="nowPlaying" class="now-playing mt-2 d-flex align-items-center justify-content-between" style="display:none;">
                     <div><i class="bi bi-play-circle me-2 text-success"></i><span id="nowPlayingText"></span></div>
                     <button class="btn btn-sm btn-outline-danger" onclick="stopPlayback()"><i class="bi bi-stop-fill"></i></button>
                 </div>
@@ -240,6 +297,7 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@latest/dist/mpegts.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
     const serverUrl = '<?= $serverUrl ?>';
@@ -253,54 +311,437 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
     let currentSection = 'live';
     let currentCategory = null;
     let streams = {};
-    let hls = null;
     let currentStream = null;
+    let liveViewMode = 'single';
+    let activeSlot = 'A';
+    let dualFailureCount = 0;
+    const dualFailureThreshold = 3;
 
-    function destroyHls() {
-        if (hls) { hls.destroy(); hls = null; }
+    const livePlayers = {
+        A: { hls: null, mpegts: null, stream: null },
+        B: { hls: null, mpegts: null, stream: null },
+    };
+
+    function getVideoEl(slot) {
+        return document.getElementById(slot === 'B' ? 'videoPlayerB' : 'videoPlayerA');
     }
 
-    function stopPlayback() {
-        destroyHls();
-        const v = document.getElementById('videoPlayer');
+    function getSlotStatusEl(slot) {
+        return document.getElementById(slot === 'B' ? 'slotBStatus' : 'slotAStatus');
+    }
+
+    function setSlotStatus(slot, text, level = '') {
+        const el = getSlotStatusEl(slot);
+        if (!el) return;
+        el.textContent = text;
+        el.classList.remove('ok', 'warn', 'err');
+        if (level) el.classList.add(level);
+    }
+
+    function markDualFailure() {
+        if (liveViewMode !== 'dual') return;
+        dualFailureCount += 1;
+        if (dualFailureCount >= dualFailureThreshold) {
+            setSlotStatus('A', 'Fallback single', 'warn');
+            setSlotStatus('B', 'Fallback single', 'warn');
+            setLiveViewMode('single');
+        }
+    }
+
+    function clearDualFailure() {
+        dualFailureCount = 0;
+    }
+
+    function tryPlayVideo(videoEl, slot) {
+        return videoEl.play().then(() => {
+            setSlotStatus(slot, 'Playing', 'ok');
+            clearDualFailure();
+        }).catch(() => {
+            setSlotStatus(slot, 'Tap Play', 'warn');
+        });
+    }
+
+    function fallbackToDirect(slot, videoEl, streamUrl) {
+        destroyPlaybackEngine(slot);
+        videoEl.src = streamUrl;
+        return tryPlayVideo(videoEl, slot);
+    }
+
+    async function isPlayableUrl(url) {
+        try {
+            const r = await fetch(url, { method: 'HEAD' });
+            return r.ok;
+        } catch {
+            return false;
+        }
+    }
+
+    async function resolveLiveSource(streamId, directSource) {
+        const m3u8Path = `${streamId}.m3u8`;
+        const tsPath = `${streamId}.ts`;
+        const directIsTs = /\.ts(\?|$)/i.test(directSource || '');
+        const directIsM3u8 = /\.m3u8(\?|$)/i.test(directSource || '');
+
+        let primaryPath = m3u8Path;
+        let secondaryPath = tsPath;
+
+        if (directIsTs) {
+            primaryPath = tsPath;
+            secondaryPath = m3u8Path;
+        } else if (directIsM3u8) {
+            primaryPath = m3u8Path;
+            secondaryPath = tsPath;
+        }
+
+        return {
+            direct: primaryPath,
+            proxied: `stream.php?type=live&stream=${encodeURIComponent(primaryPath)}`,
+            isTs: /\.ts(\?|$)/i.test(primaryPath),
+            tsFallbackProxied: `stream.php?type=live&stream=${encodeURIComponent(secondaryPath)}`,
+        };
+    }
+
+    function destroyHls(slot) {
+        if (livePlayers[slot].hls) {
+            livePlayers[slot].hls.destroy();
+            livePlayers[slot].hls = null;
+        }
+    }
+
+    function destroyMpegts(slot) {
+        if (livePlayers[slot].mpegts) {
+            try {
+                livePlayers[slot].mpegts.pause();
+                livePlayers[slot].mpegts.unload();
+                livePlayers[slot].mpegts.detachMediaElement();
+                livePlayers[slot].mpegts.destroy();
+            } catch {}
+            livePlayers[slot].mpegts = null;
+        }
+    }
+
+    function destroyPlaybackEngine(slot) {
+        destroyHls(slot);
+        destroyMpegts(slot);
+    }
+
+    function playTsWithMpegts(slot, videoEl, tsProxyUrl) {
+        return new Promise((resolve, reject) => {
+            destroyPlaybackEngine(slot);
+
+            if (!(window.mpegts && mpegts.isSupported())) {
+                videoEl.src = tsProxyUrl;
+                tryPlayVideo(videoEl, slot).then(resolve).catch(reject);
+                return;
+            }
+
+            try {
+                const player = mpegts.createPlayer(
+                    {
+                        type: 'mpegts',
+                        isLive: true,
+                        url: tsProxyUrl,
+                    },
+                    {
+                        enableStashBuffer: false,
+                        lazyLoad: false,
+                    }
+                );
+
+                livePlayers[slot].mpegts = player;
+                player.attachMediaElement(videoEl);
+                player.load();
+                setTimeout(() => {
+                    tryPlayVideo(videoEl, slot).then(resolve).catch(reject);
+                }, 200);
+
+                player.on(mpegts.Events.ERROR, () => {
+                    setSlotStatus(slot, 'Error', 'err');
+                    markDualFailure();
+                    reject(new Error('mpegts error'));
+                });
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
+
+    function clearVideo(slot) {
+        const v = getVideoEl(slot);
+        if (!v) return;
         v.pause();
         v.removeAttribute('src');
         v.load();
+        setSlotStatus(slot, 'Idle');
+    }
+
+    function updateActiveSlotUi() {
+        const slotA = document.getElementById('slotAContainer');
+        const slotB = document.getElementById('slotBContainer');
+        const btnA = document.getElementById('btnSlotA');
+        const btnB = document.getElementById('btnSlotB');
+
+        slotA.classList.toggle('active-slot', activeSlot === 'A');
+        slotB.classList.toggle('active-slot', activeSlot === 'B');
+        slotA.classList.toggle('inactive', activeSlot !== 'A');
+        slotB.classList.toggle('inactive', activeSlot !== 'B');
+
+        btnA.classList.toggle('btn-primary', activeSlot === 'A');
+        btnA.classList.toggle('btn-outline-primary', activeSlot !== 'A');
+        btnB.classList.toggle('btn-primary', activeSlot === 'B');
+        btnB.classList.toggle('btn-outline-primary', activeSlot !== 'B');
+    }
+
+    function applyAudioFocus() {
+        const a = getVideoEl('A');
+        const b = getVideoEl('B');
+        if (!a || !b) return;
+        if (liveViewMode === 'single') {
+            a.muted = false;
+            b.muted = true;
+            return;
+        }
+        const prevPausedA = a.paused;
+        const prevPausedB = b.paused;
+        a.muted = activeSlot !== 'A';
+        b.muted = activeSlot !== 'B';
+
+        if (!prevPausedA && a.paused) {
+            a.play().catch(() => {});
+        }
+        if (!prevPausedB && b.paused) {
+            b.play().catch(() => {});
+        }
+    }
+
+    function setActiveSlot(slot) {
+        activeSlot = slot === 'B' ? 'B' : 'A';
+        updateActiveSlotUi();
+        applyAudioFocus();
+    }
+
+    function setLiveViewMode(mode) {
+        liveViewMode = mode === 'dual' ? 'dual' : 'single';
+        const grid = document.getElementById('playerGrid');
+        const slotB = document.getElementById('slotBContainer');
+        const btnSingle = document.getElementById('btnSingleView');
+        const btnDual = document.getElementById('btnDualView');
+
+        grid.classList.toggle('single', liveViewMode === 'single');
+        grid.classList.toggle('dual', liveViewMode === 'dual');
+        slotB.style.display = liveViewMode === 'dual' ? '' : 'none';
+
+        btnSingle.classList.toggle('btn-secondary', liveViewMode === 'single');
+        btnSingle.classList.toggle('btn-outline-secondary', liveViewMode !== 'single');
+        btnDual.classList.toggle('btn-secondary', liveViewMode === 'dual');
+        btnDual.classList.toggle('btn-outline-secondary', liveViewMode !== 'dual');
+
+        if (liveViewMode === 'single') {
+            destroyPlaybackEngine('B');
+            clearVideo('B');
+            livePlayers.B.stream = null;
+            activeSlot = 'A';
+            clearDualFailure();
+        }
+        updateActiveSlotUi();
+        applyAudioFocus();
+    }
+
+    function initLiveControls() {
+        const btnSingle = document.getElementById('btnSingleView');
+        const btnDual = document.getElementById('btnDualView');
+        const btnA = document.getElementById('btnSlotA');
+        const btnB = document.getElementById('btnSlotB');
+        const btnFs = document.getElementById('btnLiveFullscreen');
+        const slotA = document.getElementById('slotAContainer');
+        const slotB = document.getElementById('slotBContainer');
+
+        [btnSingle, btnDual, btnA, btnB, btnFs].forEach(btn => {
+            if (!btn) return;
+            btn.onmousedown = (ev) => ev.preventDefault();
+        });
+
+        [slotA, slotB].forEach(slot => {
+            if (!slot) return;
+            slot.onpointerdown = (ev) => {
+                ev.preventDefault();
+                const slotId = slot.id === 'slotBContainer' ? 'B' : 'A';
+                setActiveSlot(slotId);
+            };
+            slot.onmousedown = (ev) => ev.preventDefault();
+            slot.ontouchstart = (ev) => {
+                ev.preventDefault();
+                const slotId = slot.id === 'slotBContainer' ? 'B' : 'A';
+                setActiveSlot(slotId);
+            };
+        });
+
+        btnSingle.onclick = (ev) => { ev.preventDefault(); setLiveViewMode('single'); };
+        btnDual.onclick = (ev) => { ev.preventDefault(); setLiveViewMode('dual'); };
+        btnA.onclick = (ev) => { ev.preventDefault(); setActiveSlot('A'); };
+        btnB.onclick = (ev) => { ev.preventDefault(); setActiveSlot('B'); };
+        btnFs.onclick = (ev) => { ev.preventDefault(); toggleLiveFullscreen(); };
+        setLiveViewMode('single');
+        bindFullscreenChange();
+    }
+
+    function isFullscreenActive() {
+        return !!(document.fullscreenElement || document.webkitFullscreenElement);
+    }
+
+    function updateFullscreenButton() {
+        const btn = document.getElementById('btnLiveFullscreen');
+        if (!btn) return;
+        if (isFullscreenActive()) {
+            btn.innerHTML = '<i class="bi bi-fullscreen-exit me-1"></i>Salir Fullscreen';
+            btn.classList.remove('btn-outline-light');
+            btn.classList.add('btn-light');
+        } else {
+            btn.innerHTML = '<i class="bi bi-arrows-fullscreen me-1"></i>Fullscreen';
+            btn.classList.remove('btn-light');
+            btn.classList.add('btn-outline-light');
+        }
+    }
+
+    function bindFullscreenChange() {
+        document.addEventListener('fullscreenchange', updateFullscreenButton);
+        document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+        updateFullscreenButton();
+    }
+
+    function toggleLiveFullscreen() {
+        const wrapper = document.getElementById('playerWrapper');
+        if (!wrapper) return;
+
+        if (!isFullscreenActive()) {
+            if (wrapper.requestFullscreen) {
+                wrapper.requestFullscreen().catch(() => {});
+            } else if (wrapper.webkitRequestFullscreen) {
+                wrapper.webkitRequestFullscreen();
+            }
+        } else {
+            if (document.exitFullscreen) {
+                document.exitFullscreen().catch(() => {});
+            } else if (document.webkitExitFullscreen) {
+                document.webkitExitFullscreen();
+            }
+        }
+    }
+
+    function stopPlayback() {
+        ['A', 'B'].forEach(slot => {
+            destroyPlaybackEngine(slot);
+            clearVideo(slot);
+            livePlayers[slot].stream = null;
+        });
         document.getElementById('nowPlaying').style.display = 'none';
         currentStream = null;
     }
 
-    async function playStream(stream) {
+    async function playStream(stream, targetSlot = null) {
+        let slot = targetSlot || activeSlot;
+        if (!targetSlot && liveViewMode === 'dual') {
+            if (livePlayers.A.stream && !livePlayers.B.stream) {
+                slot = 'B';
+            } else if (!livePlayers.A.stream && livePlayers.B.stream) {
+                slot = 'A';
+            }
+        }
         currentStream = stream;
+        livePlayers[slot].stream = stream;
+
         const name = stream.name || stream.title;
-        document.getElementById('nowPlayingText').textContent = name;
+        document.getElementById('nowPlayingText').textContent = `${slot}: ${name}`;
         document.getElementById('nowPlaying').style.display = 'flex';
 
-        const videoEl = document.getElementById('videoPlayer');
+        const videoEl = getVideoEl(slot);
+        if (!videoEl) return;
+
         videoEl.removeAttribute('src');
         videoEl.load();
-        destroyHls();
+        destroyPlaybackEngine(slot);
 
         const streamId = stream.stream_id || stream.id;
         recordHistory({ type: 'live', stream_id: String(streamId), name: name, poster: stream.stream_icon || '' });
-        const streamUrl = `${serverUrl}/live/${username}/${password}/${streamId}.m3u8`;
+        setSlotStatus(slot, 'Loading', 'warn');
+
+        const directSource = String(stream.direct_source || '').trim();
+        const source = await resolveLiveSource(streamId, directSource);
+        const primaryIsTs = source.isTs;
+        const primaryProxy = source.proxied;
+        const tsFallbackProxy = source.tsFallbackProxied;
+
+        if (primaryIsTs) {
+            playTsWithMpegts(slot, videoEl, primaryProxy).catch(() => {
+                setSlotStatus(slot, 'Error', 'err');
+                markDualFailure();
+            });
+            applyAudioFocus();
+            return;
+        }
 
         if (Hls.isSupported()) {
-            hls = new Hls();
-            hls.loadSource(streamUrl);
-            hls.attachMedia(videoEl);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => videoEl.play().catch(() => {}));
-            hls.on(Hls.Events.ERROR, (e, data) => {
-                if (data.fatal && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                    destroyHls();
-                    videoEl.src = streamUrl;
-                    videoEl.play().catch(() => {});
+            const slotHls = new Hls({
+                maxBufferLength: 30,
+                maxMaxBufferLength: 60,
+                lowLatencyMode: true,
+            });
+            livePlayers[slot].hls = slotHls;
+            slotHls.loadSource(primaryProxy);
+            slotHls.attachMedia(videoEl);
+            slotHls.on(Hls.Events.MANIFEST_PARSED, () => {
+                applyAudioFocus();
+                tryPlayVideo(videoEl, slot);
+            });
+            slotHls.on(Hls.Events.ERROR, (e, data) => {
+                if (!data.fatal) {
+                    setSlotStatus(slot, 'Recovering', 'warn');
+                    return;
+                }
+                if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                    setSlotStatus(slot, 'Retry network', 'warn');
+                    playTsWithMpegts(slot, videoEl, tsFallbackProxy)
+                    .catch(() => fallbackToDirect(slot, videoEl, tsFallbackProxy))
+                    .catch(() => {
+                        setSlotStatus(slot, 'Error', 'err');
+                        markDualFailure();
+                    });
+                } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                    setSlotStatus(slot, 'Retry media', 'warn');
+                    try {
+                        slotHls.recoverMediaError();
+                    } catch {
+                        playTsWithMpegts(slot, videoEl, tsFallbackProxy)
+                        .catch(() => fallbackToDirect(slot, videoEl, tsFallbackProxy))
+                        .catch(() => {
+                            setSlotStatus(slot, 'Error', 'err');
+                            markDualFailure();
+                        });
+                    }
+                } else {
+                    playTsWithMpegts(slot, videoEl, tsFallbackProxy)
+                    .catch(() => fallbackToDirect(slot, videoEl, tsFallbackProxy))
+                    .catch(() => {
+                        setSlotStatus(slot, 'Error', 'err');
+                        markDualFailure();
+                    });
+                }
+                if (data.fatal) {
+                    markDualFailure();
                 }
             });
         } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-            videoEl.src = streamUrl;
-            videoEl.play().catch(() => {});
+            videoEl.src = primaryProxy;
+            tryPlayVideo(videoEl, slot).catch(() => {
+                setSlotStatus(slot, 'Error', 'err');
+                markDualFailure();
+            });
+        } else {
+            setSlotStatus(slot, 'No HLS support', 'err');
+            markDualFailure();
         }
+
+        applyAudioFocus();
     }
 
     async function loadStreams(categoryId, type) {
@@ -478,7 +919,10 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
                 item.href = '#';
                 item.className = 'list-group-item list-group-item-action d-flex align-items-center';
                 item.innerHTML = `<span class="me-auto">${name}</span>${num ? `<span class="badge bg-secondary ms-2">${num}</span>` : ''}`;
-                item.onclick = () => playStream(stream);
+                item.onclick = (ev) => {
+                    ev.preventDefault();
+                    playStream(stream);
+                };
                 container.appendChild(item);
             });
         }
@@ -562,8 +1006,8 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
             document.getElementById('livePlayerCol').style.display = '';
             document.getElementById('livePanel').style.display = '';
             document.getElementById('vodSeriesCol').style.display = 'none';
-            document.getElementById('playerWrapper').innerHTML = '<video id="videoPlayer" class="w-100 h-100" controls playsinline></video>';
             document.getElementById('nowPlaying').style.display = 'none';
+            setLiveViewMode('single');
         }
 
         const cats = categories[section] || [];
@@ -624,6 +1068,7 @@ if ($seriesCategories) cacheSet("series_cat_$username", $seriesCategories, 300);
 
     const params = new URLSearchParams(window.location.search);
     const initialSection = params.get('section') || 'live';
+    initLiveControls();
     switchSection(initialSection);
     loadRecentHistory();
     </script>

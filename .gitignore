@@ -2,3 +2,9 @@ backend/data/*.json
 backend/data/*.old
 *.log
 .env
+desktop/node_modules/
+desktop/dist/
+desktop/release/
+desktop/bin/php/
+desktop/bin/ffmpeg/
+!desktop/bin/README.md
