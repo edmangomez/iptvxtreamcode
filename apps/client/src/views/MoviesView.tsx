@@ -91,7 +91,7 @@ export const MoviesView: React.FC<MoviesViewProps> = ({ session, searchQuery }) 
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [xtream]);
 
   // Cargar películas cuando cambia la categoría seleccionada (carga bajo demanda por categoría)
   useEffect(() => {

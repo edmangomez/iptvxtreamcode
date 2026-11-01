@@ -104,7 +104,7 @@ export const SeriesView: React.FC<SeriesViewProps> = ({ session, searchQuery }) 
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [xtream]);
 
   // Cargar series cuando cambia la categoría seleccionada (carga bajo demanda)
   useEffect(() => {

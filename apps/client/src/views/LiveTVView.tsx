@@ -9,6 +9,7 @@ import { registerModal } from '../hooks/useSpatialNav';
 // Caché en memoria para carga ultrarrápida (0ms) entre cambios de pestaña y navegación
 const liveChannelsCache = new Map<string, Channel[]>();
 let liveCategoriesCache: Category[] | null = null;
+let lastLiveProviderKey = '';
 
 interface LiveTVViewProps {
   session: ClientSession;
@@ -16,6 +17,13 @@ interface LiveTVViewProps {
 }
 
 export const LiveTVView: React.FC<LiveTVViewProps> = ({ session, searchQuery }) => {
+  const currentProviderKey = `${session.provider?.host || ''}_${session.provider?.username || ''}`;
+  if (lastLiveProviderKey !== currentProviderKey) {
+    lastLiveProviderKey = currentProviderKey;
+    liveCategoriesCache = null;
+    liveChannelsCache.clear();
+  }
+
   const [categories, setCategories] = useState<Category[]>(() => liveCategoriesCache || []);
   const [favCategories, setFavCategories] = useState<FavoriteCategoryItem[]>([]);
   const [catSearchQuery, setCatSearchQuery] = useState('');

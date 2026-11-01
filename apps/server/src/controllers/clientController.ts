@@ -390,11 +390,9 @@ export async function proxyXtreamApi(req: AuthenticatedClientRequest, res: Respo
   let password = '';
 
   const { directHost, directUser, directPass } = req.query as Record<string, string>;
-  if (directHost && directUser && directPass) {
-    host = directHost;
-    username = directUser;
-    password = directPass;
-  } else if (req.clientUser?.id) {
+
+  // 1. Si el usuario tiene una cuenta de servicio autenticada, usar preferentemente el proveedor asignado en la BD
+  if (req.clientUser?.id) {
     const userId = req.clientUser.id;
     const stmt = db.prepare(`
       SELECT p.host, p.username, p.password
@@ -403,21 +401,28 @@ export async function proxyXtreamApi(req: AuthenticatedClientRequest, res: Respo
       WHERE u.id = ?
     `);
     const provider = stmt.get(userId) as any;
-    if (!provider) {
-      res.status(404).json({ error: 'PROVIDER_NOT_FOUND', message: 'Proveedor no encontrado' });
-      return;
+    if (provider) {
+      host = provider.host;
+      username = provider.username;
+      password = decryptText(provider.password);
     }
-    host = provider.host;
-    username = provider.username;
-    password = decryptText(provider.password);
-  } else {
+  }
+
+  // 2. Si no hay proveedor en la BD (ej. modo xtream_direct o sin usuario), usar directHost
+  if (!host && directHost && directUser && directPass) {
+    host = directHost;
+    username = directUser;
+    password = directPass;
+  }
+
+  if (!host || !username || !password) {
     res.status(401).json({ error: 'UNAUTHORIZED', message: 'Autenticación o credenciales requeridas' });
     return;
   }
 
   const queryParams = new URLSearchParams();
   for (const [key, value] of Object.entries(req.query)) {
-    if (typeof value === 'string' && !['directHost', 'directUser', 'directPass'].includes(key)) {
+    if (typeof value === 'string' && !['directHost', 'directUser', 'directPass', 'token'].includes(key)) {
       queryParams.set(key, value);
     }
   }
@@ -435,14 +440,29 @@ export async function proxyXtreamApi(req: AuthenticatedClientRequest, res: Respo
     return;
   }
 
+  const fetchOptions = {
+    signal: AbortSignal.timeout(12000),
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*',
+    },
+  };
+
   try {
-    const upstreamRes = await fetch(targetUrl, {
-      signal: AbortSignal.timeout(12000),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-      },
-    });
+    let upstreamRes: any;
+    try {
+      upstreamRes = await fetch(targetUrl, fetchOptions);
+    } catch (initialErr: any) {
+      // Si la URL usaba https:// pero el servidor IPTV es solo HTTP (ej. WRONG_VERSION_NUMBER o ECONNRESET), reintentar automáticamente con http://
+      if (targetUrl.startsWith('https://')) {
+        const httpFallbackUrl = targetUrl.replace('https://', 'http://');
+        console.warn(`[XtreamProxy] Fallo HTTPS en ${targetUrl}. Reintentando con HTTP: ${httpFallbackUrl}`);
+        upstreamRes = await fetch(httpFallbackUrl, fetchOptions);
+      } else {
+        throw initialErr;
+      }
+    }
+
     if (!upstreamRes.ok) {
       res.status(upstreamRes.status).json({ error: 'UPSTREAM_ERROR', status: upstreamRes.status });
       return;
@@ -599,11 +619,7 @@ function resolveVodUpstreamUrl(req: AuthenticatedClientRequest): { url: string; 
   const ext = extension || 'mkv';
   const vodType = type === 'series' ? 'series' : 'movie';
 
-  if (directHost && directUser && directPass && streamId) {
-    const cleanHost = directHost.replace(/\/+$/, '');
-    return { url: `${cleanHost}/${vodType}/${directUser}/${directPass}/${streamId}.${ext}` };
-  }
-
+  // 1. Priorizar proveedor registrado en la base de datos si el usuario está autenticado
   if (req.clientUser && streamId) {
     const stmt = db.prepare(`
       SELECT p.host, p.username, p.password
@@ -612,12 +628,17 @@ function resolveVodUpstreamUrl(req: AuthenticatedClientRequest): { url: string; 
       WHERE u.id = ?
     `);
     const provider = stmt.get(req.clientUser.id) as any;
-    if (!provider) {
-      return { url: '', error: 'Proveedor no encontrado para este usuario' };
+    if (provider) {
+      const decPassword = decryptText(provider.password);
+      const cleanHost = provider.host.replace(/\/+$/, '');
+      return { url: `${cleanHost}/${vodType}/${provider.username}/${decPassword}/${streamId}.${ext}` };
     }
-    const decPassword = decryptText(provider.password);
-    const cleanHost = provider.host.replace(/\/+$/, '');
-    return { url: `${cleanHost}/${vodType}/${provider.username}/${decPassword}/${streamId}.${ext}` };
+  }
+
+  // 2. Fallback a credenciales directas para cuentas directas Xtream
+  if (directHost && directUser && directPass && streamId) {
+    const cleanHost = directHost.replace(/\/+$/, '');
+    return { url: `${cleanHost}/${vodType}/${directUser}/${directPass}/${streamId}.${ext}` };
   }
 
   return { url: '', error: 'Parámetros insuficientes para resolver stream upstream' };
